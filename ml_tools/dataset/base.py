@@ -3,8 +3,8 @@ from __future__ import print_function, division
 import os
 import argparse
 
-from ml_tools.pytils.conf import ConfigMember, OneOf, IterableOf, IsInstance, IsNone
-from ml_tools.pytils.file import mkdirp, has_files, has_sub_paths
+from ml_tools.pytils.conf import ConfigMember, OneOf, IsNone
+from ml_tools.pytils.file import mkdirp, has_sub_paths
 
 from ml_tools.dataset.fetch_utils import get_file
 from ml_tools.dataset.config import CONFIG
@@ -109,17 +109,24 @@ class DatasetBase(object):
         if destination is None:
             destination = os.path.join(CONFIG.cloud.root, cls.relative_path)
 
-        if destination.startswith('gs://'):
+        gcs_prefix = 'gs://'
+        if destination.startswith(gcs_prefix):
             if gcs is None:
                 raise ImportError('TODO')
-            bucket_name = destination.split('/')[2]
+            # TODO cleanup
+            splits = destination.split('/')
+            bucket_name = splits[2]
+            destination = '/'.join(splits[3:])
             client = gcs.Client()
             bucket = client.get_bucket(bucket_name)
             for source in cls.sources:
+                print('uploading to bucket: {}, dest: {}'.format(bucket_name, destination))
                 filename = source.get('filename', os.path.basename(source['url']))
                 filepath = os.path.join(path, filename)
                 blob = bucket.blob(destination)
                 blob.upload_from_filename(filepath)
+        else:
+            raise ValueError('TODO')
 
     @classmethod
     def cmdline(cls):
@@ -149,7 +156,7 @@ class DatasetBase(object):
         upload_parser.add_argument(
             '--source-path',
             type=str,
-            default=os.path.join(CONFIG.cloud.root, cls.relative_path),
+            default=os.path.join(CONFIG.root, cls.relative_path),
             help='local source path for to upload from storing dataset'
         )
         upload_parser.set_defaults(
