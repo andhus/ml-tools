@@ -9,8 +9,8 @@ gcloud ml-engine local train \
     --test-run True
 
 
-gcloud ml-engine jobs submit training rec_att_mt_real_job_gpu2 \
-    --job-dir gs://huss-ml-dev/ml-engine/recurrent_attention_machine_translation/real_job_gpu2 \
+gcloud ml-engine jobs submit training rec_att_mt_real_job_gpu_refactor \
+    --job-dir gs://huss-ml-dev/ml-engine/recurrent_attention_machine_translation/real_job_gpu_refactor \
     --runtime-version 1.10 \
     --module-name trainer.task \
     --package-path trainer/ \

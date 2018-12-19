@@ -78,7 +78,7 @@ To download the data run:
     this could improve performance.)
 '''
 
-from __future__ import print_function
+from __future__ import print_function, division
 
 import argparse
 import os
@@ -86,6 +86,7 @@ import heapq
 import numpy as np
 
 import tensorflow as tf
+from keras.utils import Sequence
 from tensorflow.python.lib.io import file_io
 
 from keras import backend as K
@@ -681,116 +682,73 @@ def save_model_weights(epoch, logs=None):
     os.remove(filename)
 
 
-def local_batch_shuffle(idx_batches, p=0.5):
-    for batch, next_batch in zip(idx_batches[:-1], idx_batches[1:]):
-        np.random.shuffle(batch)
-        np.random.shuffle(next_batch)
-        num_moved = 0
-        for i in range(len(batch)):
-            if num_moved < len(next_batch):
-                if np.random.random() < p:
-                    replace_idx = next_batch[num_moved]
-                    next_batch[num_moved] = batch[i]
-                    batch[i] = replace_idx
-                    num_moved += 1
-            else:
-                break
+# def load_model_weights(filepath):
+#     copy_file_to_gcs()
+#     TODO
 
 
-def bidirectional_local_batch_shuffle(idx_batches, p=0.5):
-    local_batch_shuffle(idx_batches, p)
-    local_batch_shuffle(idx_batches[::-1], p)
+class LengthGroupedBatches(Sequence):
+    """
 
-
-def get_balanced_idx_batches(sequence_lengths, max_elements):
-    idx_batch = []
-    idx_batches = [idx_batch]
-    batch_size = 0
-    for length, idx in sorted(
-        zip(sequence_lengths, range(len(sequence_lengths)))
-    ):
-        if batch_size + length <= max_elements:
-            idx_batch.append(idx)
-            batch_size += length
-        else:
-            idx_batch = [idx]
-            idx_batches.append(idx_batch)
-            batch_size = length
-
-    return idx_batches
-
-
-class SequenceLengthBatching(object):
-
-    def __init__(
-        self,
-        sequences,
-        batch_size,
-        cap_length=None,
-        shuffle_p=0.5,
-        postprocess_f=None
-    ):
-        self.sequences = sequences
+        "At each update our implementation requires time proportional to the length
+        of the longest sentence in a minibatch. Hence, to minimize the waste of
+        computation, before every 20-th update, we retrieved 1600 sentence pairs,
+        sorted them according to the lengths and split them into 20 minibatches"
+    """
+    def __init__(self, input_sequences, target_sequences, batch_size,
+                 sort_window_num_batches, maxlen, shuffle=True):
+        assert len(input_sequences) == len(target_sequences)
+        self.num_samples = len(input_sequences)
+        self.input_sequences = input_sequences
+        self.target_sequences = target_sequences
         self.batch_size = batch_size
-        if postprocess_f is not None:
-            self.postprocess_f = postprocess_f
-        else:
-            self.postprocess_f = lambda x: x
-        self.cap_length = cap_length
-        self.shuffle_p = shuffle_p
+        self.sort_window_num_samples = sort_window_num_batches * batch_size
+        self.maxlen = maxlen
+        self.shuffle = shuffle
+        self._sort_by = [len(inp) + len(tar) for inp, tar
+                         in zip(input_sequences, target_sequences)]
 
-        self.lengths = [len(s) for s in sequences]
-        if self.cap_length:
-            self.lengths_caped = [min(len(s), cap_length) for s in sequences]
-        else:
-            self.lengths_caped = self.lengths
+        self._sample_idx_batches = self.get_sample_idx_batches()
 
-        self.max_length = max(self.lengths)
-        self.max_length_caped = max(self.lengths_caped)
+    def get_sample_idx_batches(self):
+        sample_index = range(self.num_samples)
+        if self.shuffle:
+            np.random.shuffle(sample_index)
+        sample_idx_batches = []
+        for w_idx in range(0, self.num_samples, self.sort_window_num_samples):
+            window = sample_index[w_idx: w_idx + self.sort_window_num_samples]
+            window = sorted(window, key=lambda sample_idx: self._sort_by[sample_idx])
+            for b_idx in range(0, len(window), self.batch_size):
+                sample_idx_batches.append(
+                    window[b_idx:b_idx + self.batch_size])
+        if self.shuffle:
+            # this is not needed if we set `model.fit_generator(..., shuffle=True)`
+            np.random.shuffle(sample_idx_batches)
+        assert len(sample_idx_batches) == len(self)
 
-        self.average_length = sum(self.lengths) / len(self.sequences)
-        self.average_length_caped = sum(self.lengths_caped) / len(self.sequences)
-
-        self.number_of_elements_caped = sum(self.lengths_caped)
-        self.max_num_elements_per_batch = int(
-            self.batch_size * self.average_length_caped
-        )
-        self.balanced_idx_batches = get_balanced_idx_batches(
-            sequence_lengths=self.lengths_caped,
-            max_elements=self.max_num_elements_per_batch
-        )
-        self.num_batches = len(self.balanced_idx_batches)
-
-    def get_generator(self, epochs=1):
-        epoch = 0
-        while epochs is None or epoch < epochs:
-            epoch += 1
-            idx_batches = get_balanced_idx_batches(
-                sequence_lengths=self.lengths_caped,
-                max_elements=self.max_num_elements_per_batch
-            )
-            if self.shuffle_p > 0.:
-                local_batch_shuffle(idx_batches, p=self.shuffle_p)
-            for idx_batch in idx_batches:
-                sequence_batch = [
-                    self.sequences[idx][:self.cap_length] for idx in idx_batch
-                ]
-                yield self.postprocess_f(sequence_batch)
-
-
-class SequenceTuple(object):
-
-    def __init__(self, elements):
-        self.elements = elements
+        return sample_idx_batches
 
     def __len__(self):
-        return int(sum([len(e) for e in self.elements]) / len(self.elements))
+        return np.ceil(len(self.input_sequences) / self.batch_size)
 
-    def __getitem__(self, item):
-        if isinstance(item, slice):
-            return SequenceTuple([e[item] for e in self.elements])
-        else:
-            raise NotImplementedError('')
+    def __getitem__(self, batch_idx):
+        sample_idxs = self._sample_idx_batches[batch_idx]
+        # Note we should not use `maxlen` argument of `pad_sequences` since it
+        # will fill every batch to this length.
+        input_sequences = pad_sequences(
+            [self.input_sequences[idx][:self.maxlen] for idx in sample_idxs],
+            padding='post', truncating='post')
+        target_sequences = pad_sequences(
+            [self.target_sequences[idx][:self.maxlen + 1] for idx in sample_idxs],
+            padding='post', truncating='post')
+
+        x = [target_sequences[:, :-1], input_sequences]
+        y = target_sequences[:, 1:, None]  # additional dim required by loss function
+
+        return x, y
+
+    def on_epoch_end(self):
+        self._sample_idx_batches = self.get_sample_idx_batches()
 
 
 if __name__ == '__main__':
@@ -839,12 +797,12 @@ if __name__ == '__main__':
 
     # Meta parameters
     MAX_UNIQUE_WORDS = 30000
-    MAX_WORDS_PER_SENTENCE = 50  # inf in [1]
+    MAX_WORDS_PER_SENTENCE = 100  # inf in [1]
     EMBEDDING_SIZE = 620  # `m` in [1]
     RECURRENT_UNITS = 1000  # `n` in [1]
     DENSE_ATTENTION_UNITS = 1000  # fixed equal to `n` in [1]
     READOUT_HIDDEN_UNITS = 500  # `l` in [1]
-    OPTIMIZER = Adadelta(rho=0.95, epsilon=1e-6)
+    OPTIMIZER = Adadelta(rho=0.95, epsilon=1e-6, clipnorm=1.)
     BATCH_SIZE = 80
     EPOCHS = 20 if not args.test_run else 3
 
@@ -895,44 +853,19 @@ if __name__ == '__main__':
         input_seqs_val = input_seqs_val[:num_samples_val]
         target_seqs_val = target_seqs_val[:num_samples_val]
 
-
-    def postprocess(batch_of_sequence_tuples):
-        input_seqs, target_seqs = [], []
-        for seq_tup in batch_of_sequence_tuples:
-            input_seqs.append(seq_tup.elements[0])
-            target_seqs.append(seq_tup.elements[1])
-        input_seqs = pad_sequences(input_seqs, padding='post', truncating='post')
-        target_seqs = pad_sequences(target_seqs, padding='post', truncating='post')
-        return [target_seqs[:, :-1], input_seqs], target_seqs[:, 1:, None]
-
-    slb_train = SequenceLengthBatching(
-        sequences=[
-            SequenceTuple((inp, tar))
-            for inp, tar in zip(input_seqs_train, target_seqs_train)
-        ],
+    training_sequence = LengthGroupedBatches(
+        input_seqs_train, target_seqs_train,
         batch_size=BATCH_SIZE,
-        cap_length=MAX_WORDS_PER_SENTENCE,
-        postprocess_f=postprocess
-    )
+        sort_window_num_batches=20,
+        maxlen=MAX_WORDS_PER_SENTENCE)
 
-    slb_val = SequenceLengthBatching(
-        sequences=[
-            SequenceTuple((inp, tar))
-            for inp, tar in zip(input_seqs_val, target_seqs_val)
-        ],
+    validation_sequence = LengthGroupedBatches(
+        input_seqs_val, target_seqs_val,
         batch_size=BATCH_SIZE,
-        cap_length=MAX_WORDS_PER_SENTENCE,
-        postprocess_f=postprocess,
-        shuffle_p=0.
-    )
-
-    # input_seqs_train, input_seqs_val, target_seqs_train, target_seqs_val = (
-    #     pad_sequences(seq, maxlen=MAX_WORDS_PER_SENTENCE,
-    #                   padding='post', truncating='post')
-    #     for seq in [input_seqs_train,
-    #                 input_seqs_val,
-    #                 target_seqs_train,
-    #                 target_seqs_val])
+        # use a single window for optimal grouping:
+        sort_window_num_batches=int(np.ceil(len(input_seqs_val) / BATCH_SIZE)),
+        shuffle=False,
+        maxlen=MAX_WORDS_PER_SENTENCE)
 
     with tf.device('/device:GPU:0'):
 
@@ -1184,11 +1117,9 @@ if __name__ == '__main__':
             #               )
             #           ])
             model.fit_generator(
-                generator=slb_train.get_generator(epochs=EPOCHS + 1),
-                steps_per_epoch=slb_train.num_batches,
+                generator=training_sequence,
                 epochs=EPOCHS,
-                validation_data=slb_val.get_generator(epochs=EPOCHS + 1),
-                validation_steps=slb_val.num_batches,
+                validation_data=validation_sequence,
                 callbacks=[
                     callbacks.LambdaCallback(
                         on_train_begin=mk_checkpoints_dir,
