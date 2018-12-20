@@ -39,24 +39,35 @@ class LinesIterator(object):
 
 
 class FacebookLinks(DatasetBase):
-    relative_path = os.path.join('graph', 'facebook')
+    dataset_root = 'graph/facebook-links'
     sources = [
         {
             'url': 'http://socialnetworks.mpi-sws.mpg.de/data/facebook-links.txt.gz',
-            # 'hash': {'value': None, 'alg': 'auto'},
-            'sub_paths': [
-                'facebook-links.txt',
-                # 'facebook-links-unique.txt'  # TODO during extraction
-            ]
+            'hash': {
+                'value': '32d149f76c3421a08b03bfc629a9de6ce65b6fa56272cd9d5424e3de5b1acff2',
+                'algorithm': 'sha256'
+            },
+            'target': 'facebook-links.txt.gz'  # could be left empty
+        }
+    ]
+    builds = [
+        {
+            'target': 'facebook-links.txt',
+            'hash': {
+                'value': '01f9d8eb285a8da27bdfc3ccbb5ed338ce0a2d60c601e4d2d9b3b91379740196',
+                'algorithm': 'sha256'
+            }
         }
     ]
 
-    @classmethod
-    def postprocess(cls):
-        pass  # TODO
+    pack_method = DatasetBase.PACK_USE_SOURCES
 
     @classmethod
-    def _load_data(cls, path, unique=False, limit=None):
+    def post_process(cls):
+        return
+
+    @classmethod
+    def _load_data(cls, path, limit=None):
         """
         # Arguments
             unique (bool):
@@ -68,21 +79,7 @@ class FacebookLinks(DatasetBase):
         post_process_f = lambda line: tuple(
             sorted([int(v) for v in line.split()[:2]])
         )
-        if unique:
-            filepath = os.path.join(path, cls._unique_sub_path)
-            if not os.path.exists(filepath):
-                org_filepath = os.path.join(path, cls.required_sub_paths[0])
-                seen = set([])
-                with open(org_filepath) as f_org:
-                    with open(filepath, 'w') as f_unique:
-                        for line in f_org:
-                            res = post_process_f(line)
-                            if res not in seen:
-                                seen.add(res)
-                                f_unique.write(line)
-        else:
-            filepath = os.path.join(path, cls.required_sub_paths[0])
-
+        filepath = os.path.join(path, cls.builds[0]['target'])
         return LinesIterator(filepath, limit=limit, postprocess=post_process_f)
 
 

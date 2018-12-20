@@ -286,7 +286,7 @@ class GzipFileProxy(object):
         self._file.__exit__(exc_type, exc_val, exc_tb)
 
 
-def _extract_archive(file_path, path='.', archive_format='auto'):
+def extract_archive(file_path, path='.', archive_format='auto'):
     """Extracts an archive if it matches tar, tar.gz, tar.bz, or zip formats.
 
     # Arguments
@@ -302,6 +302,8 @@ def _extract_archive(file_path, path='.', archive_format='auto'):
         True if a match was found and an archive extraction was completed,
         False otherwise.
     """
+    if path is None:
+        path = os.path.abspath(os.path.join(file_path, os.path.pardir))
 
     if archive_format is None:
         return False
@@ -309,8 +311,6 @@ def _extract_archive(file_path, path='.', archive_format='auto'):
         archive_format = ['tar', 'zip', 'gzip']
     if isinstance(archive_format, six.string_types):
         archive_format = [archive_format]
-
-    import ipdb; ipdb.set_trace()
 
     for archive_type in archive_format:
         if archive_type == 'tar':
@@ -339,6 +339,37 @@ def _extract_archive(file_path, path='.', archive_format='auto'):
                     raise
             return True
     return False
+
+
+def download(url, target):
+    print('downloading {} to {}'.format(url, target))
+
+    class ProgressTracker(object):
+        # Maintain progbar for the lifetime of download.
+        # This design was chosen for Python 2.7 compatibility.
+        progbar = None
+
+    def dl_progress(count, block_size, total_size):
+        if ProgressTracker.progbar is None:
+            if total_size == -1:
+                total_size = None
+            ProgressTracker.progbar = Progbar(total_size)
+        else:
+            ProgressTracker.progbar.update(count * block_size)
+
+    error_msg = 'URL fetch failure on {} : {} -- {}'
+    try:
+        try:
+            urlretrieve(url, target, dl_progress)
+        except HTTPError as e:
+            raise Exception(error_msg.format(url, e.code, e.msg))
+        except URLError as e:
+            raise Exception(error_msg.format(url, e.errno, e.reason))
+    except (Exception, KeyboardInterrupt):
+        if os.path.exists(target):
+            os.remove(target)
+        raise
+    ProgressTracker.progbar = None
 
 
 def get_file(fname,
@@ -457,21 +488,20 @@ def get_file(fname,
     #     return untar_fpath
 
     if extract:
-        success = _extract_archive(fpath, datadir, archive_format)
+        success = extract_archive(fpath, datadir, archive_format)
         if not success:
             raise IOError('failed to extract file')
 
     return fpath
 
 
-def _hash_file(fpath, algorithm='sha256', chunk_size=65535):
+def hash_file(fpath, algorithm='sha256', chunk_size=65535):
     """Calculates a file sha256 or md5 hash.
 
     # Example
 
     ```python
-        >>> from keras.data_utils import _hash_file
-        >>> _hash_file('/path/to/file.zip')
+        >>> hash_file('/path/to/file.zip')
         'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
     ```
 
@@ -516,7 +546,7 @@ def validate_file(fpath, file_hash, algorithm='auto', chunk_size=65535):
     else:
         hasher = 'md5'
 
-    if str(_hash_file(fpath, hasher, chunk_size)) == str(file_hash):
+    if str(hash_file(fpath, hasher, chunk_size)) == str(file_hash):
         return True
     else:
         return False
