@@ -103,42 +103,17 @@ def load_from_cloud(source_uri, target_path):
 
 class DatasetBase(object):
 
-    PACK_USE_SOURCES = 'use_sources'
+    PACK_USE_SOURCES = 'use_sources'  # TODO deprecate - if none fallback on sources
     PACK_ARCHIVE_BUILDS = 'archive_builds'
     DEFAULT_PACK_METHODS = [PACK_USE_SOURCES, PACK_ARCHIVE_BUILDS]
 
-    dataset_root = None
+    root = None
     sources = None
     builds = None
-    pack_method = PACK_USE_SOURCES
+    pack_method = None
     packs = None
 
-    # dataset_root = 'path/to/dataset/root'  # within dataset_home
-    # sources = [  # downloads and verify hash (optional)
-    #     {
-    #         'url': 'url',
-    #         'hash': {'value': None, 'alg': 'auto'},
-    #         'target': None,   # Defaults to dataset_root/basename(url),
-    #         'extract': 'auto'
-    #     }
-    # ]
-    #
-    # builds = [  # None
-    #     {  # runs extract on sources
-    #         'target': 'rel/path/to/file/or/dir',
-    #         'hash': {}
-    #     }
-    # ]
-    #
-    # pack_method = 'use_sources',  # | archive_build
-    # packs = [
-    #     {  # default if use_source
-    #         'target': 'filepath',
-    #         'hash': {}
-    #     }
-    # ]
-
-    _abs_dataset_root = None
+    _abs_root = None
 
     @classmethod
     def name(cls):
@@ -146,15 +121,15 @@ class DatasetBase(object):
 
     @classmethod
     def abspath(cls, relpath):
-        if cls._abs_dataset_root is None:
+        if cls._abs_root is None:
             abs_dataset_root = os.path.abspath(
                 os.path.join(
-                    CONFIG.root,  # TODO make "HOME"
-                    cls.dataset_root
+                    CONFIG.home,  # TODO make "HOME"
+                    cls.root
                 )
             )
         else:
-            abs_dataset_root = cls._abs_dataset_root
+            abs_dataset_root = cls._abs_root
 
         return os.path.join(abs_dataset_root, relpath)
 
@@ -300,6 +275,12 @@ class DatasetBase(object):
         if cls.pack_method == cls.PACK_USE_SOURCES:
             return cls.sources_fetched(check_hash)
 
+        if cls.packs is not None:
+            for pack in cls.packs:
+                if not cls._verify_target(pack, check_hash):
+                    return False
+            return True
+
         if cls.pack_method == cls.PACK_ARCHIVE_BUILDS:
             # TODO infer target names if not given, check hashes if specified
             raise NotImplementedError('')
@@ -319,8 +300,8 @@ class DatasetBase(object):
     @classmethod
     def cloud_uri(cls, relpath):
         return os.path.join(
-            CONFIG.cloud.root,  # TODO make "HOME"
-            cls.dataset_root,
+            CONFIG.cloud.home,  # TODO make "HOME"
+            cls.root,
             relpath
         )
 
@@ -357,10 +338,24 @@ class DatasetBase(object):
             raise NotImplementedError('')
 
     @classmethod
-    def upload_pack(cls, dataset_root_uri=None):
+    def upload_pack(cls, dataset_root_uri=None, check_hash=True):
         if cls.pack_method == cls.PACK_USE_SOURCES:
             for source in cls.sources:
                 target_relapth = source.get('target', os.path.basename(source['url']))
+                target_abspath = cls.abspath(target_relapth)
+                if dataset_root_uri is None:
+                    target_uri = cls.cloud_uri(target_relapth)
+                else:
+                    target_uri = os.path.join(dataset_root_uri, target_relapth)
+                save_to_cloud(source_path=target_abspath, target_uri=target_uri)
+            return
+
+        if cls.packs is not None:
+            if not cls.is_packed(check_hash):
+                cls.pack()
+                cls.assert_packed(check_hash)
+            for pack in cls.packs:
+                target_relapth = pack['target']
                 target_abspath = cls.abspath(target_relapth)
                 if dataset_root_uri is None:
                     target_uri = cls.cloud_uri(target_relapth)
@@ -417,9 +412,9 @@ class DatasetBase(object):
     @classmethod
     @contextmanager
     def custom_abs_dataset_root(cls, path):
-        cls._abs_dataset_root = path
+        cls._abs_root = path
         yield
-        cls._abs_dataset_root = None
+        cls._abs_root = None
 
     @classmethod
     def cmdline(cls):
@@ -480,13 +475,13 @@ class DatasetBase(object):
         upload_parser.add_argument(
             '--target-uri',
             type=str,
-            default=os.path.join(CONFIG.cloud.root, cls.dataset_root),
+            default=os.path.join(CONFIG.cloud.home, cls.root),
             help='target URI for storing dataset'
         )
         upload_parser.add_argument(
             '--source-path',
             type=str,
-            default=os.path.join(CONFIG.root, cls.dataset_root),
+            default=os.path.join(CONFIG.home, cls.root),
             help='local source path for to upload from storing dataset'
         )
         upload_parser.add_argument(

@@ -5,32 +5,28 @@ from functools import partial
 
 from six import string_types
 
-from ml_tools.pytils.conf import ConfigMember, OneOf
+from ml_tools.pytils.conf import ConfigMember
 from ml_tools.pytils.conf import load_config
 
 
 class DatasetsCloudConfig(ConfigMember):
     default = {
-        'root': None,
-        'transfer': 'sources'
+        'home': None,
     }
     validate = {
-        'root': lambda root: (
-            root is None
+        'home': lambda home: (
+            home is None
             or (
-                isinstance(root, string_types)
-                and root.startswith('gs://')  # only gcs supported
+                isinstance(home, string_types)
+                and home.startswith('gs://')  # only gcs supported
             )
         ),
-        'transfer': OneOf('sources', 'extract')
     }
 
 
 class MLDatasetsConfig(ConfigMember):
     default = {
-        'root': os.path.join(os.path.expanduser('~'), 'MLTools', 'Datasets'),
-        'keep_sources': False,
-        'prefer_cloud': False,
+        'home': os.path.join(os.path.expanduser('~'), 'MLTools', 'Datasets'),
         'cloud': DatasetsCloudConfig()
     }
 

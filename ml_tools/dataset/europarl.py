@@ -10,9 +10,24 @@ class EuroParlV7FrEn(DatasetBase):
         'fr': 'europarl-v7.fr-en.fr',
         'en': 'europarl-v7.fr-en.en'
     }
-    relative_path = os.path.join('text', 'europarl', 'v7')
-    required_sub_paths = sorted(language_to_filename.values())
-    sources = ['http://www.statmt.org/europarl/v7/fr-en.tgz']
+    root = 'text/europarl/v7'
+    sources = [
+        {'url': 'http://www.statmt.org/europarl/v7/fr-en.tgz',
+         'hash': {
+             'value': '80f5d52113e23bfe51f890569ed69d2a1348127bca0894d07d1d23e0d0fac1e9',
+             'algorithm': 'sha256'}}]
+    builds = [
+        {'target': language_to_filename['fr'],
+         'hash': {
+             'value': 'dfc2a6e92df0922241a12f2e33c4d1c74689958db85985a2914b34e774eee653',
+             'algorithm': 'sha256'}},
+        {'target': language_to_filename['en'],
+         'hash': {
+             'value': '89fb4a28d1a7b97c8a77a8f94691db3d09abbfe131ce8f9e98398a4b943bacb2',
+             'algorithm': 'sha256'}}
+    ]
+    pack_method = DatasetBase.PACK_USE_SOURCES
+    packs = None
 
     @classmethod
     def _load_data(cls, path):
@@ -23,4 +38,4 @@ class EuroParlV7FrEn(DatasetBase):
 
 
 if __name__ == '__main__':
-    EuroParlV7FrEn.cmdline_require()
+    EuroParlV7FrEn.cmdline()

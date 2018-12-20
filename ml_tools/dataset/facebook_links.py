@@ -39,7 +39,7 @@ class LinesIterator(object):
 
 
 class FacebookLinks(DatasetBase):
-    dataset_root = 'graph/facebook-links'
+    root = 'graph/facebook-links'
     sources = [
         {
             'url': 'http://socialnetworks.mpi-sws.mpg.de/data/facebook-links.txt.gz',
@@ -59,7 +59,6 @@ class FacebookLinks(DatasetBase):
             }
         }
     ]
-
     pack_method = DatasetBase.PACK_USE_SOURCES
 
     @classmethod
