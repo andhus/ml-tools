@@ -102,6 +102,33 @@ def load_from_cloud(source_uri, target_path):
 
 
 class DatasetBase(object):
+    """
+
+    What problems are we solving:
+    - Reproducable and transparent
+        - transformations and compositions of available data
+        - all step declarative or implemented in python
+    - Safe
+        - all steps hashed
+    - Organized
+    - Dependencies/versions
+        - don't duplicate when not needed
+    - Seamless local and cloud dev
+        - optimized packs in cloud
+    - Extendable
+
+
+    FETCH SOURCE -> (H) -> BUILD -> (H) -> (ready)
+
+    (ready) -> (H) -> PACK -> (H) -> UPLOAD PACK -> (cloud ready)
+
+    (cloud ready) -> FETCH PACK -> (H) -> UNPACK -> (H) -> (ready)
+
+
+    REUIRE <- (H) <- (ready) <- UNPACK <- (H) <- FETCH PACK
+                        \
+                         <- BUILD <- (H) <- FETCH SOURCE
+    """
 
     PACK_USE_SOURCES = 'use_sources'  # TODO deprecate - if none fallback on sources
     PACK_ARCHIVE_BUILDS = 'archive_builds'

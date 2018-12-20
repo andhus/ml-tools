@@ -36,6 +36,8 @@ class EuroParlV7FrEn(DatasetBase):
             with open(os.path.join(path, filename), 'r') as f:
                 data[language] = f.readlines()
 
+        return data
+
 
 if __name__ == '__main__':
     EuroParlV7FrEn.cmdline()
