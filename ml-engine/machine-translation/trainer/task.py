@@ -682,9 +682,26 @@ def save_model_weights(epoch, logs=None):
     os.remove(filename)
 
 
-# def load_model_weights(filepath):
-#     copy_file_to_gcs()
-#     TODO
+def _gcs_copy(source_filepath, target_filepath):
+    """Copies a file to/from/within Google Cloud Storage (GCS).
+    # Arguments
+        source_filepath: String, path to the file on filesystem or object on GCS to
+            copy from.
+        target_filepath: String, path to the file on filesystem or object on GCS to
+            copy to.
+        overwrite: Whether we should overwrite an existing file/object at the target
+            location, or instead ask the user with a manual prompt.
+    """
+    with file_io.FileIO(source_filepath, mode='rb') as source_f:
+        with file_io.FileIO(target_filepath, mode='wb') as target_f:
+            target_f.write(source_f.read())
+
+
+def load_model_weights(source_uri):
+    print('setting model weights from {}'.format(source_uri))
+    _gcs_copy(source_uri, 'copied_weights.h5')
+    model.load_weights('copied_weights.h5')
+    print('successfully set weights')
 
 
 class LengthGroupedBatches(Sequence):
@@ -765,6 +782,13 @@ if __name__ == '__main__':
         required=True
     )
     parser.add_argument(
+        '--initial-weights',
+        type=str,
+        default=None,
+        help='Initialize model with these weights',
+        required=False
+    )
+    parser.add_argument(
         '--test-run',
         type=bool,
         default=False,
@@ -804,7 +828,7 @@ if __name__ == '__main__':
     READOUT_HIDDEN_UNITS = 500  # `l` in [1]
     OPTIMIZER = Adadelta(rho=0.95, epsilon=1e-6, clipnorm=1.)
     BATCH_SIZE = 80
-    EPOCHS = 20 if not args.test_run else 3
+    EPOCHS = 30 if not args.test_run else 3
 
     # Load and tokenize the data
     start_token = "'start'"
@@ -828,6 +852,16 @@ if __name__ == '__main__':
     target_tokenizer = Tokenizer(num_words=MAX_UNIQUE_WORDS, oov_token='?')
     input_tokenizer.fit_on_texts(input_texts_train + input_texts_val)
     target_tokenizer.fit_on_texts(target_texts_train + target_texts_val)
+
+    with open('input_tokenizer.json', 'w') as f:
+        f.write(input_tokenizer.to_json())
+
+    with open('target_tokenizer.json', 'w') as f:
+        f.write(target_tokenizer.to_json())
+
+    copy_file_to_gcs(args.job_dir, 'input_tokenizer.json')
+    copy_file_to_gcs(args.job_dir, 'target_tokenizer.json')
+
 
     input_seqs_train = input_tokenizer.texts_to_sequences(input_texts_train)
     input_seqs_val = input_tokenizer.texts_to_sequences(input_texts_val)
@@ -1116,6 +1150,9 @@ if __name__ == '__main__':
             #                   log_dir=os.path.join(args.job_dir, 'tblogs')
             #               )
             #           ])
+            if args.initial_weights is not None:
+                load_model_weights(args.initial_weights)
+
             model.fit_generator(
                 generator=training_sequence,
                 epochs=EPOCHS,
