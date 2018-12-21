@@ -83,6 +83,8 @@ from __future__ import print_function, division
 import argparse
 import os
 import heapq
+import time
+
 import numpy as np
 
 import tensorflow as tf
@@ -101,6 +103,8 @@ from keras.optimizers import Adadelta
 from keras.preprocessing.text import Tokenizer
 from keras.preprocessing.sequence import pad_sequences
 from keras.utils.generic_utils import has_arg
+
+from ml_tools.dataset.config import CONFIG as DATASET_CONFIG
 
 
 class AttentionCellWrapper(Layer):
@@ -780,20 +784,23 @@ if __name__ == '__main__':
     parser.parse_args()
     args = parser.parse_args()
 
-    FROM_LANGUAGE = 'en'
-    TO_LANGUAGE = 'de'
+    # DATASET_CONFIG.home = '.'
+    DATASET_CONFIG.cloud.home = 'gs://huss-ml-dev/datasets/'
 
-    if args.data_dir.startswith('gs://'):
-        DATA_DIR = 'wmt16_mmt'
-        os.mkdir(DATA_DIR)
-        for partion in ['train', 'val']:
-            for lang in [FROM_LANGUAGE, TO_LANGUAGE]:
-                file_io.copy(
-                    os.path.join(args.data_dir, partion + '.' + lang),
-                    os.path.join(DATA_DIR, partion + '.' + lang)
-                )
-    else:
-        DATA_DIR = args.data_dir
+    # FROM_LANGUAGE = 'en'
+    # TO_LANGUAGE = 'de'
+    #
+    # if args.data_dir.startswith('gs://'):
+    #     DATA_DIR = 'wmt16_mmt'
+    #     os.mkdir(DATA_DIR)
+    #     for partion in ['train', 'val']:
+    #         for lang in [FROM_LANGUAGE, TO_LANGUAGE]:
+    #             file_io.copy(
+    #                 os.path.join(args.data_dir, partion + '.' + lang),
+    #                 os.path.join(DATA_DIR, partion + '.' + lang)
+    #             )
+    # else:
+    #     DATA_DIR = args.data_dir
 
     # Meta parameters
     MAX_UNIQUE_WORDS = 30000
@@ -812,17 +819,47 @@ if __name__ == '__main__':
     # NOTE: using single quotes (which are not dropped by Tokenizer by default)
     # for the tokens to be distinguished from other use of "start" and "end"
 
-    def get_sentences(partion, language):
-        fpath = os.path.join(DATA_DIR, partion + '.' + language)
-        with open(fpath, 'r') as f:
-            sentences = f.readlines()
+    # def get_sentences(partion, language):
+    #     fpath = os.path.join(DATA_DIR, partion + '.' + language)
+    #     with open(fpath, 'r') as f:
+    #         sentences = f.readlines()
+    #     return ["{} {} {}".format(start_token, sentence.replace('\n', ''), end_token)
+    #             for sentence in sentences]
+
+    FROM_LANGUAGE = 'en'
+    TO_LANGUAGE = 'fr'
+
+    from ml_tools.dataset.europarl import EuroParlV7FrEn
+    data = EuroParlV7FrEn.load_data(require=True, check_hash=False)
+
+    start = time.time()
+    def preprocess(sentences):
         return ["{} {} {}".format(start_token, sentence.replace('\n', ''), end_token)
                 for sentence in sentences]
 
-    input_texts_train = get_sentences("train", FROM_LANGUAGE)
-    input_texts_val = get_sentences("val", FROM_LANGUAGE)
-    target_texts_train = get_sentences("train", TO_LANGUAGE)
-    target_texts_val = get_sentences("val", TO_LANGUAGE)
+    input_texts = preprocess(data[FROM_LANGUAGE])
+    target_texts = preprocess(data[TO_LANGUAGE])
+
+    num_samples = len(input_texts)
+    if args.test_run:
+        print('using only 1000000 samples (actual: {})'.format(num_samples))
+        num_samples = 1000000
+
+    index = np.arange(num_samples)
+    np.random.shuffle(index)
+    split = int(num_samples * 0.95)
+    index_train = index[:split]
+    index_val = index[split:]
+
+    # input_texts_train = get_sentences("train", FROM_LANGUAGE)
+    # input_texts_val = get_sentences("val", FROM_LANGUAGE)
+    # target_texts_train = get_sentences("train", TO_LANGUAGE)
+    # target_texts_val = get_sentences("val", TO_LANGUAGE)
+
+    input_texts_train = [input_texts[i] for i in index_train]
+    input_texts_val = [input_texts[i] for i in index_val]
+    target_texts_train = [target_texts[i] for i in index_train]
+    target_texts_val = [target_texts[i] for i in index_val]
 
     input_tokenizer = Tokenizer(num_words=MAX_UNIQUE_WORDS, oov_token='?')
     target_tokenizer = Tokenizer(num_words=MAX_UNIQUE_WORDS, oov_token='?')
@@ -843,15 +880,18 @@ if __name__ == '__main__':
     #     input_tokenizer.num_words - 1
     # )
 
-    if args.test_run:
-        num_samples_train = len(input_seqs_train) // 100
-        print('using first {} samples in training'.format(num_samples_train))
-        num_samples_val = len(input_seqs_val) // 100
-        print('using first {} samples in validation'.format(num_samples_val))
-        input_seqs_train = input_seqs_train[:num_samples_train]
-        target_seqs_train = target_seqs_train[:num_samples_train]
-        input_seqs_val = input_seqs_val[:num_samples_val]
-        target_seqs_val = target_seqs_val[:num_samples_val]
+    # if args.test_run:
+    #     num_samples_train = len(input_seqs_train) // 100
+    #     print('using first {} samples in training'.format(num_samples_train))
+    #     num_samples_val = len(input_seqs_val) // 100
+    #     print('using first {} samples in validation'.format(num_samples_val))
+    #     input_seqs_train = input_seqs_train[:num_samples_train]
+    #     target_seqs_train = target_seqs_train[:num_samples_train]
+    #     input_seqs_val = input_seqs_val[:num_samples_val]
+    #     target_seqs_val = target_seqs_val[:num_samples_val]
+
+    end = time.time()
+    print('preprocessing of data took: {} s'.format(round(end - start, 1)))
 
     training_sequence = LengthGroupedBatches(
         input_seqs_train, target_seqs_train,
@@ -1127,6 +1167,7 @@ if __name__ == '__main__':
                     ),
                     callbacks.LambdaCallback(on_epoch_end=print_samples),
                     callbacks.TensorBoard(
+                        update_freq=BATCH_SIZE * 10,
                         log_dir=os.path.join(args.job_dir, 'tblogs')
                     )
                 ]

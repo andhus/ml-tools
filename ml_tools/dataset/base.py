@@ -120,6 +120,7 @@ def load_from_cloud(source_uri, target_path):
     if source_uri.startswith(gcs_prefix):
         # prefer tensorflow option
         if tf_file_io is not None:
+            # TODO doesn't rais if file not available
             _gcs_copy(source_uri, target_path)
             return
 
