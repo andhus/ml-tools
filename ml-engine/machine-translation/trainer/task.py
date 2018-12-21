@@ -679,11 +679,12 @@ def mk_checkpoints_dir(logs=None):
     file_io.recursive_create_dir(os.path.join(args.job_dir, 'checkpoints'))
 
 
-def save_model_weights(epoch, logs=None):
-    filename = 'weights.{epoch:03d}_{loss:.3f}.hdf5'.format(epoch=epoch + 1, **logs)
-    model.save_weights(filename)
-    copy_file_to_gcs(os.path.join(args.job_dir, 'checkpoints'), filename)
-    os.remove(filename)
+def save_model_weights(batch, logs=None):
+    if batch % 200 == 0 and batch > 1:
+        filename = 'weights.{batch:03d}_{loss:.3f}.hdf5'.format(**logs)
+        model.save_weights(filename)
+        copy_file_to_gcs(os.path.join(args.job_dir, 'checkpoints'), filename)
+        os.remove(filename)
 
 
 # def load_model_weights(filepath):
@@ -769,17 +770,22 @@ if __name__ == '__main__':
         required=True
     )
     parser.add_argument(
+        '--dataset-root',
+        type=str,
+        default=None,  # use config
+        help='dataset root')
+    parser.add_argument(
         '--test-run',
         type=bool,
         default=False,
         help='set to True for running on subset of data',
     )
-    # parser.add_argument(
-    #     '--inference-from',
-    #     type=str,
-    #     default='',
-    #     help='use from pretrained weights',
-    # )
+    parser.add_argument(
+        '--inference-from',
+        type=str,
+        default='',
+        help='use from pretrained weights',
+    )
 
     parser.parse_args()
     args = parser.parse_args()
@@ -804,14 +810,15 @@ if __name__ == '__main__':
 
     # Meta parameters
     MAX_UNIQUE_WORDS = 30000
-    MAX_WORDS_PER_SENTENCE = 100  # inf in [1]
+    MAX_WORDS_PER_SENTENCE = 50  # inf in [1]
     EMBEDDING_SIZE = 620  # `m` in [1]
     RECURRENT_UNITS = 1000  # `n` in [1]
     DENSE_ATTENTION_UNITS = 1000  # fixed equal to `n` in [1]
     READOUT_HIDDEN_UNITS = 500  # `l` in [1]
     OPTIMIZER = Adadelta(rho=0.95, epsilon=1e-6, clipnorm=1.)
-    BATCH_SIZE = 80
-    EPOCHS = 5 if not args.test_run else 3
+    # BATCH_SIZE = 80
+    BATCH_SIZE = 50
+    EPOCHS = 3 if not args.test_run else 3
 
     # Load and tokenize the data
     start_token = "'start'"
@@ -830,7 +837,7 @@ if __name__ == '__main__':
     TO_LANGUAGE = 'fr'
 
     from ml_tools.dataset.news_comentary import NewsCommentaryV9FrEn
-    data = NewsCommentaryV9FrEn.load_data('.', require=True, check_hash=True)
+    data = NewsCommentaryV9FrEn.load_data(args.dataset_root, require=True, check_hash=True)
 
     start = time.time()
     def preprocess(sentences):
@@ -1111,7 +1118,7 @@ if __name__ == '__main__':
             return output_texts, output_scores
 
         def print_samples(batch, logs=None):
-            if batch % 500 == 0:
+            if batch % 200 == 0 and batch > 1:
                 # Translate some sentences from validation data
                 for input_text, target_text in zip(input_texts_val[:5],
                                                    target_texts_val[:5]):
@@ -1164,7 +1171,7 @@ if __name__ == '__main__':
                 callbacks=[
                     callbacks.LambdaCallback(
                         on_train_begin=mk_checkpoints_dir,
-                        on_epoch_end=save_model_weights
+                        on_batch_end=save_model_weights
                     ),
                     callbacks.LambdaCallback(on_batch_end=print_samples),
                     callbacks.TensorBoard(
