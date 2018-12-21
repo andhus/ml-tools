@@ -26,7 +26,7 @@ class WMT14Dev(DatasetBase):
     packs = [
         {'target': 'wmt14-dev.pack.tgz'}
     ]
-    
+
     @classmethod
     def build(cls):
         [source] = cls.sources

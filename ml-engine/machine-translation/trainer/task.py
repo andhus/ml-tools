@@ -757,11 +757,11 @@ class LengthGroupedBatches(Sequence):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '--data-dir',
-        type=str,
-        default='gs://huss-ml-dev/datasets/wmt16/mmt',
-        help='Path to wmt dataset')
+    # parser.add_argument(
+    #     '--data-dir',
+    #     type=str,
+    #     default='gs://huss-ml-dev/datasets/wmt16/mmt',
+    #     help='Path to wmt dataset')
     parser.add_argument(
         '--job-dir',
         type=str,
@@ -774,12 +774,12 @@ if __name__ == '__main__':
         default=False,
         help='set to True for running on subset of data',
     )
-    parser.add_argument(
-        '--inference-from',
-        type=str,
-        default='',
-        help='use from pretrained weights',
-    )
+    # parser.add_argument(
+    #     '--inference-from',
+    #     type=str,
+    #     default='',
+    #     help='use from pretrained weights',
+    # )
 
     parser.parse_args()
     args = parser.parse_args()
@@ -811,7 +811,7 @@ if __name__ == '__main__':
     READOUT_HIDDEN_UNITS = 500  # `l` in [1]
     OPTIMIZER = Adadelta(rho=0.95, epsilon=1e-6, clipnorm=1.)
     BATCH_SIZE = 80
-    EPOCHS = 20 if not args.test_run else 3
+    EPOCHS = 5 if not args.test_run else 3
 
     # Load and tokenize the data
     start_token = "'start'"
@@ -829,8 +829,8 @@ if __name__ == '__main__':
     FROM_LANGUAGE = 'en'
     TO_LANGUAGE = 'fr'
 
-    from ml_tools.dataset.europarl import EuroParlV7FrEn
-    data = EuroParlV7FrEn.load_data(require=True, check_hash=False)
+    from ml_tools.dataset.news_comentary import NewsCommentaryV9FrEn
+    data = NewsCommentaryV9FrEn.load_data('.', require=True, check_hash=True)
 
     start = time.time()
     def preprocess(sentences):
@@ -842,8 +842,8 @@ if __name__ == '__main__':
 
     num_samples = len(input_texts)
     if args.test_run:
-        print('using only 1000000 samples (actual: {})'.format(num_samples))
-        num_samples = 1000000
+        print('using only 1000 samples (actual: {})'.format(num_samples))
+        num_samples = 1000
 
     index = np.arange(num_samples)
     np.random.shuffle(index)
@@ -1110,29 +1110,30 @@ if __name__ == '__main__':
 
             return output_texts, output_scores
 
-        def print_samples(epoch, logs=None):
-            # Translate some sentences from validation data
-            for input_text, target_text in zip(input_texts_val[:5],
-                                               target_texts_val[:5]):
-                print("Translating: ", input_text)
-                print("Expected: ", target_text)
-                output_greedy, score_greedy = translate_greedy(input_text)
-                print("Greedy output: ", output_greedy)
-                outputs_beam, scores_beam = translate_beam_search(input_text)
-                print("Beam search outputs (top 5):")
-                for beam in outputs_beam[:5]:
-                    print("\t" + beam)
+        def print_samples(batch, logs=None):
+            if batch % 500 == 0:
+                # Translate some sentences from validation data
+                for input_text, target_text in zip(input_texts_val[:5],
+                                                   target_texts_val[:5]):
+                    print("Translating: ", input_text)
+                    print("Expected: ", target_text)
+                    output_greedy, score_greedy = translate_greedy(input_text)
+                    print("Greedy output: ", output_greedy)
+                    outputs_beam, scores_beam = translate_beam_search(input_text)
+                    print("Beam search outputs (top 5):")
+                    for beam in outputs_beam[:5]:
+                        print("\t" + beam)
 
-            for input_text, target_text in zip(input_texts_train[:5],
-                                               target_texts_train[:5]):
-                print("Translating: ", input_text)
-                print("Expected: ", target_text)
-                output_greedy, score_greedy = translate_greedy(input_text)
-                print("Greedy output: ", output_greedy)
-                outputs_beam, scores_beam = translate_beam_search(input_text)
-                print("Beam search outputs (top 5):")
-                for beam in outputs_beam[:5]:
-                    print("\t" + beam)
+                for input_text, target_text in zip(input_texts_train[:5],
+                                                   target_texts_train[:5]):
+                    print("Translating: ", input_text)
+                    print("Expected: ", target_text)
+                    output_greedy, score_greedy = translate_greedy(input_text)
+                    print("Greedy output: ", output_greedy)
+                    outputs_beam, scores_beam = translate_beam_search(input_text)
+                    print("Beam search outputs (top 5):")
+                    for beam in outputs_beam[:5]:
+                        print("\t" + beam)
 
 
         if args.inference_from != '':
@@ -1165,9 +1166,9 @@ if __name__ == '__main__':
                         on_train_begin=mk_checkpoints_dir,
                         on_epoch_end=save_model_weights
                     ),
-                    callbacks.LambdaCallback(on_epoch_end=print_samples),
+                    callbacks.LambdaCallback(on_batch_end=print_samples),
                     callbacks.TensorBoard(
-                        update_freq=BATCH_SIZE * 10,
+                        update_freq=BATCH_SIZE * 50,
                         log_dir=os.path.join(args.job_dir, 'tblogs')
                     )
                 ]

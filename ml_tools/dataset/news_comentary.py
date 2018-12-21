@@ -31,7 +31,7 @@ class NewsCommentaryV9FrEn(DatasetBase):
              'algorithm': 'sha256'}}
     ]
     packs = [
-        {'target': 'training-parallel-nc-v9-fr-en.tgz'}
+        {'target': 'training-parallel-nc-v9-fr-en.pack.tgz'}
     ]
 
     @classmethod

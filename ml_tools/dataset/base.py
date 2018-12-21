@@ -143,6 +143,75 @@ def load_from_cloud(source_uri, target_path):
         raise ValueError('cloud target not supported')
 
 
+# TODO
+# - work with instances instead, class can have one class attribute config
+#
+# class HashConfig(object):
+#
+#     default_algorithm = 'sha256'
+#
+#     def __init__(self, conf):
+#         if isinstance(conf, str):
+#             self.value = conf
+#             self.algorithm = self.default_algorithm
+#         else:
+#             self.value = conf['value']
+#             self.algorithm = conf.get('algorithm', self.default_algorithm)
+#
+#
+# class Component(object):
+#
+#     def __init__(self, target, hash=None):
+#         self.target = target
+#         self.hash = HashConfig(hash) if hash is not None else None
+#
+#     def validate(self):
+#         pass  # check exists and hash
+#
+#
+# class Source(Component):
+#
+#     def __init__(
+#         self,
+#         url,
+#         extract='auto',
+#         target=None,
+#         hash=None,
+#         fallback_urls=None
+#     ):
+#         super(Source, self).__init__(target=None, hash=hash)
+#         self.url = url
+#         self._target = target
+#         self.extract = extract
+#         self.fallback_urls = fallback_urls
+#
+#     @property
+#     def target(self):
+#         if self._target is not None:
+#             return self._target
+#         return os.path.basename(self.url)
+#
+#
+# class DatasetBase(object):
+#
+#     config = {
+#         'root': 'path/to/dsroot',
+#         'sources': [],
+#         'builds': [],
+#         'packs': [],
+#     }
+#     builder = None
+#     packer = None
+#
+#     def __init__(
+#         self,
+#         dataset_root=None,
+#         dataset_home=None,
+#         config_override=None
+#     ):
+#         self.sources = [Source(s) for s in self.config['sources']]
+#
+
 class DatasetBase(object):
     """
 
@@ -170,6 +239,8 @@ class DatasetBase(object):
     REUIRE <- (H) <- (ready) <- UNPACK <- (H) <- FETCH PACK
                         \
                          <- BUILD <- (H) <- FETCH SOURCE
+
+
     """
 
     PACK_USE_SOURCES = 'use_sources'  # TODO deprecate - if none fallback on sources
@@ -375,14 +446,35 @@ class DatasetBase(object):
         )
 
     @classmethod
-    def fetch_pack(cls):
+    def fetch_pack(cls, dataset_root_uri=None, check_hash=True):
+        if cls.is_packed(check_hash):
+            warn('pack already available')
+            return
+
         if cls.pack_method == cls.PACK_USE_SOURCES:
             for source in cls.sources:
                 target_relpath = source.get('target', os.path.basename(source['url']))
                 target_abspath = cls.abspath(target_relpath)
-                source_uri = cls.cloud_uri(target_relpath)
+                if dataset_root_uri is None:
+                    source_uri = cls.cloud_uri(target_relpath)
+                else:
+                    source_uri = os.path.join(dataset_root_uri, target_relpath)
+                load_from_cloud(source_uri, target_abspath)
+            cls.assert_sources_fetched(check_hash)
+            return
+
+        if cls.packs is not None:
+            for pack in cls.packs:
+                target_relpath = pack['target']
+                target_abspath = cls.abspath(target_relpath)
+                if dataset_root_uri is None:
+                    source_uri = cls.cloud_uri(target_relpath)
+                else:
+                    source_uri = os.path.join(dataset_root_uri, target_relpath)
                 load_from_cloud(source_uri, target_abspath)
             return
+
+
 
         if cls.pack_method == cls.PACK_ARCHIVE_BUILDS:
             # TODO infer target names if not given, load from cloud.
