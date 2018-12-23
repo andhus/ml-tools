@@ -6,11 +6,21 @@ from contextlib import contextmanager
 from warnings import warn
 
 from ml_tools.pytils.conf import ConfigMember, OneOf, IsNone
-from ml_tools.pytils.file import mkdirp, has_sub_paths
+from ml_tools.pytils.file import mkdirp
 
-from ml_tools.dataset.fetch_utils import get_file, download, validate_file, \
-    extract_archive, hash_file
+from ml_tools.dataset.fetch_utils import (
+    download,
+    validate_file,
+    extract_archive,
+    hash_file
+)
 from ml_tools.dataset.config import CONFIG
+
+
+try:
+    from tensorflow.python.lib.io import file_io as tf_file_io
+except ImportError:
+    tf_file_io = None
 
 try:
     from google.cloud import storage as gcs
@@ -62,8 +72,34 @@ def get_gcs_bucket_and_object_name(uri):
     return bucket_name, object_name
 
 
+def _gcs_copy(source_filepath, target_filepath):
+    """Copies a file to/from/within Google Cloud Storage (GCS).
+    # Arguments
+        source_filepath: String, path to the file on filesystem or object on GCS to
+            copy from.
+        target_filepath: String, path to the file on filesystem or object on GCS to
+            copy to.
+        overwrite: Whether we should overwrite an existing file/object at the target
+            location, or instead ask the user with a manual prompt.
+    """
+    if tf_file_io is None:
+        raise ImportError('Google Cloud Storage file transfer requires TensorFlow.')
+    # if not overwrite and tf_file_io.file_exists(target_filepath):
+    #     proceed = ask_to_proceed_with_overwrite(target_filepath)
+    #     if not proceed:
+    #         return
+    with tf_file_io.FileIO(source_filepath, mode='rb') as source_f:
+        with tf_file_io.FileIO(target_filepath, mode='wb') as target_f:
+            target_f.write(source_f.read())
+
+
 def save_to_cloud(source_path, target_uri):
     if target_uri.startswith(gcs_prefix):
+        # prefer tensorflow option
+        if tf_file_io is not None:
+            _gcs_copy(source_path, target_uri)
+            return
+
         if gcs is None:
             raise ImportError('you must have google.cloud.storage installed')
         bucket_name, object_name = get_gcs_bucket_and_object_name(target_uri)
@@ -82,6 +118,12 @@ def save_to_cloud(source_path, target_uri):
 
 def load_from_cloud(source_uri, target_path):
     if source_uri.startswith(gcs_prefix):
+        # prefer tensorflow option
+        if tf_file_io is not None:
+            # TODO doesn't rais if file not available
+            _gcs_copy(source_uri, target_path)
+            return
+
         if gcs is None:
             raise ImportError('you must have google.cloud.storage installed')
         bucket_name, object_name = get_gcs_bucket_and_object_name(source_uri)
@@ -99,6 +141,103 @@ def load_from_cloud(source_uri, target_path):
             raise CloudIOError('object does not exists')
     else:
         raise ValueError('cloud target not supported')
+
+
+# TODO
+# - work with instances instead, class can have one class attribute config
+#
+# class HashConfig(object):
+#
+#     default_algorithm = 'sha256'
+#
+#     def __init__(self, conf):
+#         if isinstance(conf, str):
+#             self.value = conf
+#             self.algorithm = self.default_algorithm
+#         else:
+#             self.value = conf['value']
+#             self.algorithm = conf.get('algorithm', self.default_algorithm)
+#
+#
+# class Component(object):
+#
+#     def __init__(self, target, hash=None):
+#         self.target = target
+#         self.hash = HashConfig(hash) if hash is not None else None
+#
+#     def validate(self):
+#         pass  # check exists and hash
+#
+#
+# class Source(Component):
+#
+#     def __init__(
+#         self,
+#         url,
+#         extract='auto',
+#         target=None,
+#         hash=None,
+#         fallback_urls=None
+#     ):
+#         super(Source, self).__init__(target=None, hash=hash)
+#         self.url = url
+#         self._target = target
+#         self.extract = extract
+#         self.fallback_urls = fallback_urls
+#
+#     @property
+#     def target(self):
+#         if self._target is not None:
+#             return self._target
+#         return os.path.basename(self.url)
+#
+#
+# class DatasetBase(object):
+#
+#     config = {
+#         'root': 'path/to/dsroot',
+#         'sources': [],
+#         'builds': [],
+#         'packs': [],
+#     }
+#     builder = None
+#     packer = None
+#
+#     def __init__(
+#         self,
+#         dataset_root=None,
+#         dataset_home=None,
+#         config_override=None
+#     ):
+#         self.sources = [Source(s) for s in self.config['sources']]
+#
+
+# root = 'text/news-commentary/v9'
+# sources = [
+#     {'url': 'http://www.statmt.org/wmt14/training-parallel-nc-v9.tgz',
+#      'hash': 'cb8953f29229...'}
+# ]
+# builds = [
+#     {'target': 'news-commentary-v9.fr-en.fr',
+#      'hash': '02bcfae33373...'},
+#     {'target': 'news-commentary-v9.fr-en.en',
+#      'hash': '02bcfae33373...'},
+# ]
+# packs = [
+#     # custom
+#     {'target': 'training-parallel-nc-v9-fr-en.pack.tgz',
+#      'hash': '02bcfae33373...',
+#      'paths': ['news-commentary-v9.fr-en.en', ]},
+#
+#     #
+#     {'path': 'news-commentary-v9.fr-en.en',
+#     # target becomes: news-commentary-v9.fr-en.en.pack.tgz
+#      'hash': '234'},
+#
+#     {'path': '/path/to/subfile.csv',
+#     # target becomes: /path/to/subfile.csv.pack.tgz
+#      'hash': '234'}
+# ]
 
 
 class DatasetBase(object):
@@ -128,6 +267,8 @@ class DatasetBase(object):
     REUIRE <- (H) <- (ready) <- UNPACK <- (H) <- FETCH PACK
                         \
                          <- BUILD <- (H) <- FETCH SOURCE
+
+
     """
 
     PACK_USE_SOURCES = 'use_sources'  # TODO deprecate - if none fallback on sources
@@ -151,7 +292,7 @@ class DatasetBase(object):
         if cls._abs_root is None:
             abs_dataset_root = os.path.abspath(
                 os.path.join(
-                    CONFIG.home,  # TODO make "HOME"
+                    CONFIG.home,
                     cls.root
                 )
             )
@@ -327,20 +468,41 @@ class DatasetBase(object):
     @classmethod
     def cloud_uri(cls, relpath):
         return os.path.join(
-            CONFIG.cloud.home,  # TODO make "HOME"
+            CONFIG.cloud.home,
             cls.root,
             relpath
         )
 
     @classmethod
-    def fetch_pack(cls):
+    def fetch_pack(cls, dataset_root_uri=None, check_hash=True):
+        if cls.is_packed(check_hash):
+            warn('pack already available')
+            return
+
         if cls.pack_method == cls.PACK_USE_SOURCES:
             for source in cls.sources:
                 target_relpath = source.get('target', os.path.basename(source['url']))
                 target_abspath = cls.abspath(target_relpath)
-                source_uri = cls.cloud_uri(target_relpath)
+                if dataset_root_uri is None:
+                    source_uri = cls.cloud_uri(target_relpath)
+                else:
+                    source_uri = os.path.join(dataset_root_uri, target_relpath)
+                load_from_cloud(source_uri, target_abspath)
+            cls.assert_sources_fetched(check_hash)
+            return
+
+        if cls.packs is not None:
+            for pack in cls.packs:
+                target_relpath = pack['target']
+                target_abspath = cls.abspath(target_relpath)
+                if dataset_root_uri is None:
+                    source_uri = cls.cloud_uri(target_relpath)
+                else:
+                    source_uri = os.path.join(dataset_root_uri, target_relpath)
                 load_from_cloud(source_uri, target_abspath)
             return
+
+
 
         if cls.pack_method == cls.PACK_ARCHIVE_BUILDS:
             # TODO infer target names if not given, load from cloud.
@@ -438,7 +600,7 @@ class DatasetBase(object):
 
     @classmethod
     @contextmanager
-    def custom_abs_dataset_root(cls, path):
+    def custom_abs_root(cls, path):
         cls._abs_root = path
         yield
         cls._abs_root = None
@@ -450,7 +612,7 @@ class DatasetBase(object):
 
         # REQUIRE
         def require(args):
-            with cls.custom_abs_dataset_root(args.target_path):
+            with cls.custom_abs_root(args.target_path):
                 cls.require(check_hash=args.check_hash)
 
         require_parser = subparsers.add_parser(
@@ -473,7 +635,7 @@ class DatasetBase(object):
 
         # UPLOAD
         def upload(args):
-            with cls.custom_abs_dataset_root(args.source_path):
+            with cls.custom_abs_root(args.source_path):
                 if cls.is_packed(args.check_hash):
                     print('Found packed version, uploading...')
                     cls.upload_pack(dataset_root_uri=args.target_uri)
@@ -544,13 +706,20 @@ class DatasetBase(object):
         return args.func(args)
 
     @classmethod
-    def load_data(cls, path=None, **kwargs):
+    def load_data(cls, path=None, require=True, check_hash=True, **kwargs):
         __doc__ = cls._load_data.__doc__
+        if require:
+            if path is not None:
+                with cls.custom_abs_root(path):
+                    cls.require(check_hash)
+            else:
+                cls.require(check_hash)
+
         if path is not None:
-            abs_dataset_root = path
+            abs_root = path
         else:
-            abs_dataset_root = cls.abspath('.')
-        return cls._load_data(path=abs_dataset_root, **kwargs)
+            abs_root = cls.abspath('.')
+        return cls._load_data(path=abs_root, **kwargs)
 
     @classmethod
     def _load_data(cls, path, **kwargs):

@@ -9,29 +9,22 @@ from ml_tools.dataset.fetch_utils import extract_archive
 from ml_tools.pytils.file import mkdirp
 
 
-class NewsCommentaryV9FrEn(DatasetBase):
-    language_to_filename = {
-        'fr': 'news-commentary-v9.fr-en.fr',
-        'en': 'news-commentary-v9.fr-en.en'
-    }
-    root = 'text/news-commentary/v9'
+class WMT14Dev(DatasetBase):
+    root = 'text/wmt14/dev'
+
+    languages = ['cs', 'de', 'en', 'es', 'fr', 'ru']
+    filenames = ['newstest2013.{}'.format(lang) for lang in languages]
+    language_to_filename = dict(zip(languages, filenames))
+
     sources = [
-        {'url': 'http://www.statmt.org/wmt14/training-parallel-nc-v9.tgz',
+        {'url': 'http://www.statmt.org/wmt14/dev.tgz',
          'hash': {
-            'value': 'cb8953f292298e6877ae433c98912b927cb0766b303f4540512ddd286c748485',
+            'value': 'cda0f85309e8ea4c9c2bc142cd795fb2771a5939ed5b4527b525dae05fa0c145',
             'algorithm': 'sha256'}}]
-    builds = [
-        {'target': language_to_filename['fr'],
-         'hash': {
-             'value': '02bcfae333730635a5007def8affe228904938330801db35d3c12d9e915fb3e4',
-             'algorithm': 'sha256'}},
-        {'target': language_to_filename['en'],
-         'hash': {
-             'value': '7d171abc43dafa572a95754e5fd680d3e57088eb0c4697c19c29483f83b11754',
-             'algorithm': 'sha256'}}
-    ]
+
+    builds = [{'target': fn} for fn in language_to_filename.values()]
     packs = [
-        {'target': 'training-parallel-nc-v9-fr-en.pack.tgz'}
+        {'target': 'wmt14-dev.pack.tgz'}
     ]
 
     @classmethod
@@ -48,12 +41,14 @@ class NewsCommentaryV9FrEn(DatasetBase):
         )
         for build in cls.builds:
             filename = build['target']
-            shutil.move(os.path.join(tmp_dir, 'training', filename), cls.abspath(filename))
+            shutil.move(
+                os.path.join(tmp_dir, 'dev', filename), cls.abspath(filename)
+            )
         shutil.rmtree(tmp_dir)
 
     @classmethod
     def pack(cls):
-        pack_dir = cls.abspath('fr-en.pack')
+        pack_dir = cls.abspath('wmt14-dev.pack')
         mkdirp(pack_dir)
         for build in cls.builds:
             filename = build['target']
@@ -67,7 +62,7 @@ class NewsCommentaryV9FrEn(DatasetBase):
     @classmethod
     def unpack(cls):
         [pack] = cls.packs
-        pack_dir = cls.abspath('fr-en.pack')
+        pack_dir = cls.abspath('wmt14-dev.pack')
         extract_archive(
             cls.abspath(pack['target']),
             path=None,  # same dir as file
@@ -88,4 +83,4 @@ class NewsCommentaryV9FrEn(DatasetBase):
 
 
 if __name__ == '__main__':
-    NewsCommentaryV9FrEn.cmdline()
+    WMT14Dev.cmdline()
