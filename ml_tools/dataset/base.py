@@ -1,7 +1,10 @@
 from __future__ import print_function, division
 
+import abc
 import os
 import argparse
+import tarfile
+import zipfile
 from contextlib import contextmanager
 from warnings import warn
 
@@ -27,30 +30,30 @@ try:
 except ImportError:
     storage = None
 
-
-class HashConfig(ConfigMember):
-    """Can be used to validate"""
-    # TODO remove?
-    default = {
-        'value': None,
-        'algorithm': 'auto'
-    }
-    validate = {
-        'value': OneOf(IsNone(), str),
-        'algorithm': OneOf('md5', 'sha256')
-    }
-
-
-class SourceConfig(ConfigMember):
-    """Can be used to validate"""
-    # TODO remove?
-    default = {
-        'url': None,
-        'filename': None,
-        'hash': None,
-        'extract': 'auto',
-        'required_sub_paths': tuple([])
-    }
+#
+# class HashConfig(ConfigMember):
+#     """Can be used to validate"""
+#     # TODO remove?
+#     default = {
+#         'value': None,
+#         'algorithm': 'auto'
+#     }
+#     validate = {
+#         'value': OneOf(IsNone(), str),
+#         'algorithm': OneOf('md5', 'sha256')
+#     }
+#
+#
+# class SourceConfig(ConfigMember):
+#     """Can be used to validate"""
+#     # TODO remove?
+#     default = {
+#         'url': None,
+#         'filename': None,
+#         'hash': None,
+#         'extract': 'auto',
+#         'required_sub_paths': tuple([])
+#     }
 
 
 class DatasetNotAvailable(IOError):
@@ -145,99 +148,443 @@ def load_from_cloud(source_uri, target_path):
 
 # TODO
 # - work with instances instead, class can have one class attribute config
+
+
+@contextmanager
+def temp_dirtar(path):
+    """Provides temporary tared version of directory"""
+    temp_tar_path = path + '.tmp.tgz'
+    if os.path.exists(temp_tar_path):
+        raise IOError('{} already exists'.format(temp_tar_path))
+    with tarfile.open(temp_tar_path, "w:gz") as tar:
+        tar.add(path, arcname=os.path.basename(path))
+    try:
+        yield temp_tar_path
+    finally:
+        os.remove(temp_tar_path)
+
+
+class HashConfig(object):
+
+    default_algorithm = 'sha256'
+
+    def __init__(self, conf):
+        if isinstance(conf, str):
+            self.value = conf
+            self.algorithm = self.default_algorithm
+        else:
+            self.value = conf['value']
+            self.algorithm = conf.get('algorithm', self.default_algorithm)
+
+    def validate(self, path):
+        if os.path.isfile(path):
+            return validate_file(path, self.value, self.algorithm)
+
+        if os.path.isdir(path):
+            with temp_dirtar(path) as tarpath:
+                return validate_file(tarpath, self.value, self.algorithm)
+
+        raise IOError('Could not verify {}'.format(path))
+
+
+class LocalTarget(object):
+
+    def __init__(self, path, dataset_root, hash=None):
+        self.path = path
+        self.hash = HashConfig(hash) if hash is not None else None
+        self.dataset_root = dataset_root
+
+    @property
+    def abspath(self):
+        return os.path.join(self.dataset_root, self.path)
+
+    def exists(self):
+        return os.path.exists(self.abspath)
+
+    def ready(self, check_hash=True):
+        if not self.exists():
+            return False
+
+        if check_hash:
+            if self.hash is None:
+                warn('no hash provided for {}'.format(self.path))
+                return True
+            return self.hash.validate(self.abspath)
+
+        return True
+
+    @classmethod
+    def from_config(cls, config, dataset_root):
+        return cls(dataset_root=dataset_root, **config)
+
+
+def parse_target(target, dataset_root):
+    if isinstance(target, LocalTarget):
+        return target
+
+    if not isinstance(target, dict):
+        raise NotImplementedError(
+            'target must either be an instance of LocalTarget or a dict '
+            'with a valid target config',
+        )
+
+    return LocalTarget.from_config(target, dataset_root)
+
+
+class SourceABC(LocalTarget):
+
+    @abc.abstractmethod
+    def require(self):
+        raise NotImplementedError
+
+
+class URLSource(SourceABC):
+
+    def __init__(
+        self,
+        url,
+        extract='auto',
+        **kwargs
+    ):
+        super(URLSource, self).__init__(**kwargs)
+        self.url = url
+
+        self.extract = extract
+
+    @classmethod
+    def from_config(cls, config, dataset_root):
+        """From the type of config used to define datasets.
+
+        simplest form; local path will be end of url `filename.tar.gz`
+        {'url': 'http://www.domain.org/.../filename.tar.gz',
+         'hash': 'cb8953f29229...'}
+
+        specify path in dataset
+        {'url': 'http://www.domain.org/.../filename.tar.gz',
+         'path' new-filename.tgz,
+         'hash': 'cb8953f29229...'}
+        """
+        url = config.pop('url')
+        path = config.pop('path', os.path.basename(url))
+
+        return cls(url=url, path=path, dataset_root=dataset_root, **config)
+
+    def fetch(self, check_hash=True):
+        download(self.url, self.abspath)
+        assert self.ready(check_hash)
+
+
+class DatasetSource(SourceABC):
+
+    def __init__(self, dataset):
+        super(DatasetSource, self).__init__(None, None)
+        self.dataset = dataset
+
+    def require(self):
+        self.dataset.require()
+
+    def exists(self):
+        return self.dataset.exists()
+
+    def ready(self, check_hash=True):
+        return self.dataset.ready(check_hash)
+
+
+def parse_source(source, dataset_root):
+    if isinstance(source, SourceABC):  # TODO just check api.
+        return source
+
+    if not isinstance(source, dict):
+        raise NotImplementedError(
+            'source must either be an instance of Source or a dict '
+            'with a valid source config',
+        )
+
+    if 'url' in source:
+        return URLSource.from_config(source, dataset_root)
+    else:
+        raise NotImplementedError('Only URLSources supported.')
+
+
+class Pack(LocalTarget):
+    """
+
+    """
+    default_tar_extension = 'pack.tgz'
+    default_gz_extentision = 'pack.gz'
+
+    def __init__(self, build_paths=None, **kwargs):
+        super(Pack, self).__init__(**kwargs)
+        self.build_paths = build_paths
+
+    @classmethod
+    def from_config(cls, config, dataset_root):
+        """From the type of config used to define datasets.
+
+        {
+            'path': 'training-parallel-nc-v9-fr-en.pack.tgz',
+            'hash': '02bcfae33373...',
+            'build_paths': ['news-commentary-v9.fr-en.en', ...]
+            'build_path': 'news-commentary-v9.fr-en.en'
+        }
+        """
+        build_paths = config.pop('build_paths')
+        path = config.pop('path', None)
+        if path is None:
+            assert len(build_paths) == 1
+            path = build_paths[0] + cls.default_tar_extension
+
+        return cls(
+            path=path,
+            build_paths=build_paths,
+            dataset_root=dataset_root,
+            **config
+        )
+
+    def pack(self):
+        with tarfile.open(self.abspath, "w:gz") as tar:
+            for build_path in self.build_paths:
+                tar.add(build_path, arcname=os.path.basename(build_path))
+
+    def unpack(self):
+        with tarfile.open(self.abspath, "r:gz") as tar:
+            tar.extractall()
+
+
+def parse_pack(pack, dataset_root):
+    if isinstance(pack, Pack):
+        return pack
+
+    if not isinstance(pack, dict):
+        raise NotImplementedError(
+            'pack must either be an instance of Pack or a dict '
+            'with a valid pack config',
+        )
+
+    return Pack.from_config(pack, dataset_root)
+
+
+
+# class SourcePack(LocalTarget):
 #
-# class HashConfig(object):
-#
-#     default_algorithm = 'sha256'
-#
-#     def __init__(self, conf):
-#         if isinstance(conf, str):
-#             self.value = conf
-#             self.algorithm = self.default_algorithm
-#         else:
-#             self.value = conf['value']
-#             self.algorithm = conf.get('algorithm', self.default_algorithm)
-#
-#
-# class Component(object):
-#
-#     def __init__(self, target, hash=None):
-#         self.target = target
-#         self.hash = HashConfig(hash) if hash is not None else None
-#
-#     def validate(self):
-#         pass  # check exists and hash
-#
-#
-# class Source(Component):
-#
-#     def __init__(
-#         self,
-#         url,
-#         extract='auto',
-#         target=None,
-#         hash=None,
-#         fallback_urls=None
-#     ):
-#         super(Source, self).__init__(target=None, hash=hash)
-#         self.url = url
-#         self._target = target
-#         self.extract = extract
-#         self.fallback_urls = fallback_urls
-#
-#     @property
-#     def target(self):
-#         if self._target is not None:
-#             return self._target
-#         return os.path.basename(self.url)
-#
-#
-# class DatasetBase(object):
-#
-#     config = {
-#         'root': 'path/to/dsroot',
-#         'sources': [],
-#         'builds': [],
-#         'packs': [],
-#     }
-#     builder = None
-#     packer = None
-#
-#     def __init__(
-#         self,
-#         dataset_root=None,
-#         dataset_home=None,
-#         config_override=None
-#     ):
-#         self.sources = [Source(s) for s in self.config['sources']]
+#     def __init__(self, source):
+#         super(SourcePack, self).__init__(None, None)
+#         self.source = source
 #
 
-# root = 'text/news-commentary/v9'
-# sources = [
-#     {'url': 'http://www.statmt.org/wmt14/training-parallel-nc-v9.tgz',
-#      'hash': 'cb8953f29229...'}
-# ]
-# builds = [
-#     {'target': 'news-commentary-v9.fr-en.fr',
-#      'hash': '02bcfae33373...'},
-#     {'target': 'news-commentary-v9.fr-en.en',
-#      'hash': '02bcfae33373...'},
-# ]
-# packs = [
-#     # custom
-#     {'target': 'training-parallel-nc-v9-fr-en.pack.tgz',
-#      'hash': '02bcfae33373...',
-#      'paths': ['news-commentary-v9.fr-en.en', ]},
+# class Builder(object):
 #
-#     #
-#     {'path': 'news-commentary-v9.fr-en.en',
-#     # target becomes: news-commentary-v9.fr-en.en.pack.tgz
-#      'hash': '234'},
+#     def __call__(self, sources, builds):
+#         raise NotImplementedError()
 #
-#     {'path': '/path/to/subfile.csv',
-#     # target becomes: /path/to/subfile.csv.pack.tgz
-#      'hash': '234'}
-# ]
+#
+# class Extract(Builder):
+#
+#     def __call__(self, sources, builds):
+#         for source in sources:
+#             extract_archive(source.path, path=None, archive_format=source.extract)
+#         # TODO verify that builds were generated
+#
+#
+# class TarExtractSelect(Builder):
+#
+#     def __init__(self, tarpath_to_path):
+
+
+class DatasetBase2(object):
+    """
+    Arguments:
+        root_abspath: override path/to/dataset_root/
+        dataset_home: override path/to/dataset_home/ should not be specified if
+            root_abspath is given
+
+    """
+
+    # if packs not specified => use sources
+    config = {
+        'root': 'path/to/dsroot',
+        'sources': [],
+        'builds': [],
+        'packs': [],
+    }
+    # builder = None
+    # packer = None
+
+    def __init__(
+        self,
+        root_abspath=None,
+        dataset_home=None,
+        cloud_root_abspath=None,
+        cloud_dataset_home=None
+    ):
+        if root_abspath is not None:
+            if dataset_home is not None:
+                warn('dataset_home has no effect when root_abspath is specified')
+            self.root_abspath = root_abspath
+        else:
+            if dataset_home is None:
+                dataset_home = CONFIG.home
+            self.root_abspath = os.path.join(dataset_home, self.config['root'])
+
+        if cloud_root_abspath is not None:
+            if cloud_dataset_home is not None:
+                warn(
+                    'cloud_dataset_home has no effect when cloud_root_abspath is '
+                    'specified'
+                )
+            self.cloud_root_abspath = cloud_root_abspath
+        else:
+            if cloud_dataset_home is None:
+                cloud_dataset_home = CONFIG.cloud.home
+            self.cloud_root_abspath = os.path.join(
+                cloud_dataset_home,
+                self.config['root']
+            )
+
+        self.sources = [
+            parse_source(s, self.root_abspath) for s in self.config['sources']]
+        self.builds = [
+            parse_target(b, self.root_abspath) for b in self.config['builds']]
+        packs = self.config.get('packs', None)
+        if packs:
+            self.packs = [
+                parse_pack(p, self.root_abspath) for p in self.config['packs']
+            ]
+        else:
+            self.packs = None  # assuming sources used as packs
+
+    def require(self, check_hash=True):
+        if self.build_ready(check_hash):
+            return
+
+        print('checking if packed')
+        # same as checking if sources exists if packs=None
+        if self.pack_ready(check_hash):
+            print('found packed, unpacking')
+            self.unpack()
+            assert self.build_ready()
+            return
+
+        print('checking if available from cloud')
+        try:
+            self.fetch_pack(check_hash)
+            self.unpack()
+            assert self.build_ready()
+            return
+        except Exception as e:
+            print('failed fetching -> unpacking Error: {}'.format(e))
+
+        print('check if sources exists')
+        if self.sources_ready(check_hash):
+            print('sources, exists, building...')
+            self.build()
+            assert self.build_ready(check_hash)
+            return
+
+        print('trying to fetch sources')
+        self.fetch_sources()
+        self.sources_ready(check_hash)
+        self.build()
+        assert self.build_ready(check_hash)
+        # raise DatasetNotAvailable()
+
+    def require_sources(self, check_hash=True):
+        for source in self.sources:
+            if not source.ready(check_hash):
+                source.fetch()
+                assert source.ready()
+
+    def sources_ready(self, check_hash=True):
+        for source in self.sources:
+            if not source.ready(check_hash):
+                return False
+        return True
+
+    def fetch_sources(self):
+        for source in self.sources:
+            source.fetch()
+
+    def require_build(self, check_hash=True):
+        """Default is to extract sources, run post_process"""
+        if not self.build_ready(check_hash):
+            self.build()
+            assert self.build_ready()
+
+    def build_ready(self, check_hash=False):
+        for build in self.builds:
+            if not build.ready(check_hash):
+                return False
+        return True
+
+    def build(self):
+        for source in self.sources:
+            extract_archive(source.path, path=None, archive_format=source.extract)
+        self.post_process()
+
+    def pack(self):
+        if self.packs is None:
+            # using sources
+            self.require_sources()
+        else:
+            for pack in self.packs:
+                pack.pack()
+
+    def pack_ready(self, check_hash):
+        if self.packs is None:
+            return self.sources_ready(check_hash)
+
+        for pack in self.packs:
+            if not pack.ready(check_hash):
+                return False
+
+        return True
+
+    def unpack(self):
+        if self.packs is None:
+            # using sources
+            self.require_build()
+        else:
+            for pack in self.packs:
+                pack.unpack()
+
+    def fetch_pack(self, check_hash=True):
+        if self.pack_ready(check_hash):
+            warn('pack already available')
+            return
+
+        packs = self.packs or self.sources  # use sources if packs None
+        for pack in packs:
+            pack_uri = os.path.join(self.cloud_root_abspath, pack.path)
+            load_from_cloud(pack_uri, pack.abspath)
+            assert pack.ready(check_hash)
+
+    def upload_pack(self, check_hash=True):  # TODO override?
+        if not self.pack_ready(check_hash):
+            raise RuntimeError('TODO')
+        packs = self.packs or self.sources  # use sources if packs None
+        for pack in packs:
+            pack_uri = os.path.join(self.cloud_root_abspath, pack.path)
+            # TODO check if already exists?
+            save_to_cloud(pack.abspath, pack_uri)
+            assert pack.ready(check_hash)
+
+    def load_data(self, require=True, check_hash=True, **kwargs):
+        __doc__ = self._load_data.__doc__
+        if require:
+            self.require(check_hash)
+
+        return self._load_data(path=self.root_abspath, **kwargs)
+
+    def get_abspath(self, relpath):
+        return os.path.join(self.root_abspath, relpath)
+
+    # OVERRIDE THESE
+    def post_process(self):
+        """Implement for additional logic"""
+        return
+
+    def _load_data(self, path, **kwargs):
+        raise NotImplementedError()
 
 
 class DatasetBase(object):
