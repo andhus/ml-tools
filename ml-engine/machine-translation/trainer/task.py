@@ -87,6 +87,7 @@ import numpy as np
 
 import tensorflow as tf
 from keras.utils import Sequence
+from keras_preprocessing.text import tokenizer_from_json
 from tensorflow.python.lib.io import file_io
 
 from keras import backend as K
@@ -848,20 +849,30 @@ if __name__ == '__main__':
     target_texts_train = get_sentences("train", TO_LANGUAGE)
     target_texts_val = get_sentences("val", TO_LANGUAGE)
 
-    input_tokenizer = Tokenizer(num_words=MAX_UNIQUE_WORDS, oov_token='?')
-    target_tokenizer = Tokenizer(num_words=MAX_UNIQUE_WORDS, oov_token='?')
-    input_tokenizer.fit_on_texts(input_texts_train + input_texts_val)
-    target_tokenizer.fit_on_texts(target_texts_train + target_texts_val)
+    if args.inference_from != '':
+        with open(os.path.join(args.inference_from, 'input_tokenizer.json')) as f:
+            input_tokenizer = tokenizer_from_json(f.read())
+        with open(os.path.join(args.inference_from, 'target_tokenizer.json')) as f:
+            target_tokenizer = tokenizer_from_json(f.read())
+            target_tokenizer.split = target_tokenizer.split.encode('utf-8')
+            target_tokenizer.word_index = {
+                w.encode('utf-8'): i for w, i in target_tokenizer.word_index.items()
+            }
 
-    with open('input_tokenizer.json', 'w') as f:
-        f.write(input_tokenizer.to_json())
+    else:
+        input_tokenizer = Tokenizer(num_words=MAX_UNIQUE_WORDS, oov_token='?')
+        target_tokenizer = Tokenizer(num_words=MAX_UNIQUE_WORDS, oov_token='?')
+        input_tokenizer.fit_on_texts(input_texts_train)
+        target_tokenizer.fit_on_texts(target_texts_train)
 
-    with open('target_tokenizer.json', 'w') as f:
-        f.write(target_tokenizer.to_json())
+        with open('input_tokenizer.json', 'w') as f:
+            f.write(input_tokenizer.to_json())
 
-    copy_file_to_gcs(args.job_dir, 'input_tokenizer.json')
-    copy_file_to_gcs(args.job_dir, 'target_tokenizer.json')
+        with open('target_tokenizer.json', 'w') as f:
+            f.write(target_tokenizer.to_json())
 
+        copy_file_to_gcs(args.job_dir, 'input_tokenizer.json')
+        copy_file_to_gcs(args.job_dir, 'target_tokenizer.json')
 
     input_seqs_train = input_tokenizer.texts_to_sequences(input_texts_train)
     input_seqs_val = input_tokenizer.texts_to_sequences(input_texts_val)
@@ -869,12 +880,12 @@ if __name__ == '__main__':
     target_seqs_val = target_tokenizer.texts_to_sequences(target_texts_val)
 
     # we need to know the largest index to set size of embeddings and output layer
-    input_max_word_idx = max([max(s) for s in input_seqs_train + input_seqs_val])
-    target_max_word_idx = max([max(s) for s in target_seqs_train + target_seqs_val])
+    input_num_words = max([max(s) for s in input_seqs_train]) + 1
+    target_num_words = max([max(s) for s in target_seqs_train]) + 1
     # Note that the Tokenizer does't have a property for this, but below also works:
-    # input_max_word_idx = min(
-    #     max(input_tokenizer.word_index.values()),
-    #     input_tokenizer.num_words - 1
+    # input_num_words = min(
+    #     max(input_tokenizer.word_index.values()) + 1,
+    #     input_tokenizer.num_words
     # )
 
     if args.test_run:
@@ -906,8 +917,8 @@ if __name__ == '__main__':
         # Build model
         x = Input((None,), name="input_sequences")
         y = Input((None,), name="target_sequences")
-        x_emb = Embedding(input_max_word_idx + 1, EMBEDDING_SIZE, mask_zero=True)(x)
-        y_emb = Embedding(target_max_word_idx + 1, EMBEDDING_SIZE, mask_zero=True)(y)
+        x_emb = Embedding(input_num_words, EMBEDDING_SIZE, mask_zero=True)(x)
+        y_emb = Embedding(target_num_words, EMBEDDING_SIZE, mask_zero=True)(y)
 
         encoder_rnn = Bidirectional(GRU(RECURRENT_UNITS,
                                         return_sequences=True,
@@ -932,20 +943,17 @@ if __name__ == '__main__':
         h1 = decoder_rnn(y_emb, initial_state=initial_state, constants=[x_enc, u])
 
 
-        def dense_maxout(x_):
-            """Implements a dense maxout layer where max is taken
-            over _two_ units"""
-            x_ = Dense(READOUT_HIDDEN_UNITS * 2)(x_)
+        def maxout(x_):
+            """Maxout "activation" where max is taken over _two_ units"""
             x_1 = x_[:, :READOUT_HIDDEN_UNITS]
             x_2 = x_[:, READOUT_HIDDEN_UNITS:]
             return K.max(K.stack([x_1, x_2], axis=-1), axis=-1, keepdims=False)
 
 
-        maxout_layer = TimeDistributed(Lambda(dense_maxout))
-        h2 = maxout_layer(concatenate([h1, y_emb]))
-        output_layer = TimeDistributed(Dense(target_max_word_idx + 1,
-                                             activation='softmax'))
-        y_pred = output_layer(h2)
+        _h2 = TimeDistributed(Dense(READOUT_HIDDEN_UNITS * 2))(
+            concatenate([h1, y_emb]))
+        h2 = TimeDistributed(Lambda(maxout))(_h2)
+        y_pred = TimeDistributed(Dense(target_num_words, activation='softmax'))(h2)
 
         model = Model([y, x], y_pred)
         model.compile(loss='sparse_categorical_crossentropy', optimizer=OPTIMIZER)
@@ -1106,31 +1114,52 @@ if __name__ == '__main__':
 
         def print_samples(epoch, logs=None):
             # Translate some sentences from validation data
-            for input_text, target_text in zip(input_texts_val[:5],
-                                               target_texts_val[:5]):
-                print("Translating: ", input_text)
-                print("Expected: ", target_text)
+            print('---- Epoch {} ----'.format(epoch + 1))
+            for i, (input_text, target_text) in enumerate(
+                zip(input_texts_val, target_texts_val)[:5]
+            ):
+                print("set=val,sample={},epoch={},Translating: ".format(i, epoch + 1), input_text)
+                print("set=val,sample={},epoch={},Expected: ".format(i, epoch + 1), target_text)
                 output_greedy, score_greedy = translate_greedy(input_text)
-                print("Greedy output: ", output_greedy)
+                print("Greedy output: ")
+                print("set=val,sample={},readout=greedy,epoch={}\t".format(i, epoch + 1), output_greedy)
                 outputs_beam, scores_beam = translate_beam_search(input_text)
                 print("Beam search outputs (top 5):")
-                for beam in outputs_beam[:5]:
-                    print("\t" + beam)
+                for j, beam in enumerate(outputs_beam[:5]):
+                    print("set=val,sample={},readout=bs{},epoch={}\t".format(i, j, epoch + 1) + beam)
 
-            for input_text, target_text in zip(input_texts_train[:5],
-                                               target_texts_train[:5]):
-                print("Translating: ", input_text)
-                print("Expected: ", target_text)
+            for i, (input_text, target_text) in enumerate(
+                zip(input_texts_train, target_texts_train)[:5]
+            ):
+                # print("Translating: ", input_text)
+                # print("Expected: ", target_text)
+                # output_greedy, score_greedy = translate_greedy(input_text)
+                # print("Greedy output: ", output_greedy)
+                # outputs_beam, scores_beam = translate_beam_search(input_text)
+                # print("Beam search outputs (top 5):")
+                # for beam in outputs_beam[:5]:
+                #     print("\t" + beam)
+                print("set=train,sample={},epoch={},Translating: ".format(i, epoch + 1), input_text)
+                print("set=train,sample={},epoch={},Expected: ".format(i, epoch + 1), target_text)
                 output_greedy, score_greedy = translate_greedy(input_text)
-                print("Greedy output: ", output_greedy)
+                print("Greedy output: ")
+                print("set=train,sample={},readout=greedy,epoch={}\t".format(i, epoch + 1), output_greedy)
                 outputs_beam, scores_beam = translate_beam_search(input_text)
                 print("Beam search outputs (top 5):")
-                for beam in outputs_beam[:5]:
-                    print("\t" + beam)
+                for j, beam in enumerate(outputs_beam[:5]):
+                    print("set=train,sample={},readout=bs{},epoch={}\t".format(i, j, epoch + 1) + beam)
 
 
         if args.inference_from != '':
-            model.load_weights(args.inference_from)
+            if os.path.isdir(args.inference_from):
+                from glob import glob
+                checkpoint_paths = glob(
+                    os.path.join(args.inference_from, 'checkpoints', 'weights.*')
+                )
+                for checkpoint_path in sorted(checkpoint_paths):
+                    model.load_weights(checkpoint_path)
+                    epoch = int(os.path.basename(checkpoint_path)[8:11])
+                    print_samples(epoch, None)
         else:
             # Run training
             # model.fit([target_seqs_train[:, :-1], input_seqs_train],

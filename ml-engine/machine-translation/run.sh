@@ -9,8 +9,8 @@ gcloud ml-engine local train \
     --test-run True
 
 
-gcloud ml-engine jobs submit training rec_att_mt_sequence_gen_gpu \
-    --job-dir gs://huss-ml-dev/ml-engine/recurrent_attention_machine_translation/rec_att_mt_sequence_gen_gpu \
+gcloud ml-engine jobs submit training rec_att_mt_sequence_gen_gpu_fix_maxout \
+    --job-dir gs://huss-ml-dev/ml-engine/recurrent_attention_machine_translation/rec_att_mt_sequence_gen_gpu_fix_maxout \
     --runtime-version 1.10 \
     --module-name trainer.task \
     --package-path trainer/ \
