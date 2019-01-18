@@ -110,21 +110,21 @@ class URLSource(SourceABC):
         url.download(self.url, self.abspath)
         assert self.ready(check_hash)
 
-
-class DatasetSource(SourceABC):
-
-    def __init__(self, dataset):
-        super(DatasetSource, self).__init__(None, None)
-        self.dataset = dataset
-
-    def require(self):
-        self.dataset.require()
-
-    def exists(self):
-        return self.dataset.exists()
-
-    def ready(self, check_hash=True):
-        return self.dataset.ready(check_hash)
+# TODO
+# class DatasetSource(SourceABC):
+#
+#     def __init__(self, dataset):
+#         super(DatasetSource, self).__init__(None, None)
+#         self.dataset = dataset
+#
+#     def fetch(self):
+#         self.dataset.require()
+#
+#     def exists(self):
+#         return self.dataset.exists()
+#
+#     def ready(self, check_hash=True):
+#         return self.dataset.ready(check_hash)
 
 
 def parse_source(source, dataset_root):
@@ -146,7 +146,6 @@ def parse_source(source, dataset_root):
 class Pack(LocalTarget):
     """TODO"""
     default_tar_extension = 'pack.tgz'
-    default_gz_extentision = 'pack.gz'
 
     def __init__(self, build_paths=None, **kwargs):
         super(Pack, self).__init__(**kwargs)
@@ -199,4 +198,3 @@ def parse_pack(pack, dataset_root):
         )
 
     return Pack.from_config(pack, dataset_root)
-

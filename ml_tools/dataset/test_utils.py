@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 from contextlib import contextmanager
+from functools import wraps
 from io import BytesIO
 
 from mock import Mock, patch
@@ -77,6 +78,18 @@ def temp_dir(**kwargs):
     yield temp_dirname
     if os.path.exists(temp_dirname):
         shutil.rmtree(temp_dirname)
+
+
+def in_temp_dir(test_func):
+    @wraps(test_func)
+    def test_wrapper(self=None):
+        with temp_dir() as _temp_dir:
+            if self is not None:
+                return test_func(self, _temp_dir)
+            else:
+                return test_func(_temp_dir)
+
+    return test_wrapper
 
 
 class TempDirMixin(object):
