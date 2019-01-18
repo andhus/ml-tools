@@ -6,16 +6,21 @@ import tarfile
 from warnings import warn
 from pprint import pprint
 
-from ml_tools.dataset.fetch_utils import download
-from ml_tools.dataset.hash import HashConfig
+from ml_tools.dataset import url
+from ml_tools.dataset.hash import HashReference
 
 
 class LocalTarget(object):
 
-    def __init__(self, path, dataset_root, hash=None):
+    def __init__(self, path, dataset_root, hash_reference=None):
         self.path = path
-        self.hash = HashConfig(hash) if hash is not None else None
         self.dataset_root = dataset_root
+        if isinstance(hash_reference, HashReference):
+            self.hash = hash_reference
+        elif hash_reference is not None:
+            self.hash = HashReference.from_config(hash_reference)
+        else:
+            self.hash = None
 
     @property
     def abspath(self):
@@ -30,9 +35,8 @@ class LocalTarget(object):
 
         if check_hash:
             if self.hash is None:
-                warn('no hash provided for {}'.format(self.path))
-                return True
-            return self.hash.validate(self.abspath)
+                raise ValueError('no hash provided for {}'.format(self.path))
+            return self.hash.is_valid(self.abspath)
 
         return True
 
@@ -41,7 +45,7 @@ class LocalTarget(object):
         return cls(dataset_root=dataset_root, **config)
 
     def print_hash(self):
-        hash_conf = self.hash or HashConfig('')
+        hash_conf = self.hash or HashReference('')
         true_hash = hash_conf.get_hash(self.abspath)
 
         if hash_conf.algorithm == hash_conf.default_algorithm:
@@ -67,8 +71,8 @@ def parse_target(target, dataset_root):
 class SourceABC(LocalTarget):
 
     @abc.abstractmethod
-    def require(self):
-        raise NotImplementedError
+    def fetch(self):
+        raise NotImplementedError()
 
 
 class URLSource(SourceABC):
@@ -81,7 +85,6 @@ class URLSource(SourceABC):
     ):
         super(URLSource, self).__init__(**kwargs)
         self.url = url
-
         self.extract = extract
 
     @classmethod
@@ -104,7 +107,7 @@ class URLSource(SourceABC):
         return cls(url=url, path=path, dataset_root=dataset_root, **config)
 
     def fetch(self, check_hash=True):
-        download(self.url, self.abspath)
+        url.download(self.url, self.abspath)
         assert self.ready(check_hash)
 
 

@@ -4,7 +4,7 @@ import os
 import shutil
 
 from ml_tools.dataset.base import DatasetBase
-from ml_tools.dataset.fetch_utils import extract_archive
+from ml_tools.dataset.archive import extract_archive
 from ml_tools.pytils.file import mkdirp
 
 

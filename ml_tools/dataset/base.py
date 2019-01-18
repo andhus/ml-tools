@@ -4,7 +4,7 @@ import os
 from warnings import warn
 
 from ml_tools.dataset.cloud import load_from_cloud, save_to_cloud
-from ml_tools.dataset.fetch_utils import extract_archive
+from ml_tools.dataset.archive import extract_archive
 from ml_tools.dataset.config import CONFIG
 from ml_tools.dataset.target import parse_source, parse_target, parse_pack
 
@@ -137,7 +137,12 @@ class DatasetBase(object):
 
     def build(self):
         for source in self.sources:
-            extract_archive(source.path, path=None, archive_format=source.extract)
+            if source.extract:  # skip if `None` or `False`
+                extract_archive(
+                    source.path,
+                    path=None,
+                    archive_format=source.extract
+                )
         self.post_process()
 
     def pack(self):

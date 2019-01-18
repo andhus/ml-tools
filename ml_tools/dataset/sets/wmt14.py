@@ -5,7 +5,7 @@ import shutil
 import tarfile
 
 from ml_tools.dataset import DatasetBase
-from ml_tools.dataset.fetch_utils import extract_archive
+from ml_tools.dataset.archive import extract_archive
 from ml_tools.pytils.file import mkdirp
 
 

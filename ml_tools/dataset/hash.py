@@ -52,7 +52,7 @@ def get_hash(filepath, algorithm='sha256', chunk_size=65535):
     return _get_hash(filepath)
 
 
-def validate_hash(filepath, expected_hash, algorithm='sha256', chunk_size=65535):
+def is_valid_hash(filepath, expected_hash, algorithm='sha256', chunk_size=65535):
     """Validates a file against a sha256 or md5 hash.
 
     # Arguments
@@ -64,36 +64,44 @@ def validate_hash(filepath, expected_hash, algorithm='sha256', chunk_size=65535)
     # Returns
         Whether the file is valid
     """
-
-    if algorithm == 'sha256':
-        hasher = hashlib.sha256()
-    elif algorithm == 'md5':
-        hasher = hashlib.md5()
-    else:
-        raise ValueError('`algorithm` must one of "sha256" and "md5"')
-
-    if str(get_hash(filepath, hasher, chunk_size)) == str(expected_hash):
+    if str(get_hash(filepath, algorithm, chunk_size)) == str(expected_hash):
         return True
     else:
         return False
 
 
-class HashConfig(object):
+class HashReference(object):
 
     default_algorithm = 'sha256'
+    supported_algorithms = [default_algorithm, 'md5']
 
-    def __init__(self, conf):
-        if isinstance(conf, str):
-            self.value = conf
-            self.algorithm = self.default_algorithm
+    def __init__(self, value, algorithm):
+        self.value = value
+        if algorithm not in self.supported_algorithms:
+            raise ValueError('`algorithm` must be one of {}'.format(
+                self.supported_algorithms)
+            )
+        self.algorithm = algorithm
+
+    @classmethod
+    def from_config(cls, config):
+        if isinstance(config, dict):
+            value = config['value']
+            algorithm = config.get('algorithm', cls.default_algorithm)
         else:
-            self.value = conf['value']
-            self.algorithm = conf.get('algorithm', self.default_algorithm)
+            value = config
+            algorithm = cls.default_algorithm
+        return cls(value, algorithm)
 
-    def validate(self, path):
+    def is_valid(self, path):
 
-        return validate_hash(path, self.value, self.algorithm)
+        return is_valid_hash(path, self.value, self.algorithm)
 
     def get_hash(self, path):
 
-        return get_hash(path)
+        return get_hash(path, algorithm=self.algorithm)
+
+    def __eq__(self, other):
+        return isinstance(other, HashReference) and (
+            other.value == self.value and other.algorithm == self.algorithm
+        )
