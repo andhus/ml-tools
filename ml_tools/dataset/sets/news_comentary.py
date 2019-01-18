@@ -3,12 +3,12 @@ from __future__ import print_function, division
 import os
 import shutil
 
-from ml_tools.dataset.base import DatasetBase2
+from ml_tools.dataset.base import DatasetBase
 from ml_tools.dataset.fetch_utils import extract_archive
 from ml_tools.pytils.file import mkdirp
 
 
-class NewsCommentaryV9FrEn(DatasetBase2):
+class NewsCommentaryV9FrEn(DatasetBase):
     language_to_filename = {
         'fr': 'news-commentary-v9.fr-en.fr',
         'en': 'news-commentary-v9.fr-en.en'
