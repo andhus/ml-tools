@@ -7,6 +7,7 @@ import tarfile
 import zipfile
 from contextlib import contextmanager
 from warnings import warn
+from pprint import pprint
 
 from ml_tools.pytils.conf import ConfigMember, OneOf, IsNone
 from ml_tools.pytils.file import mkdirp
@@ -29,31 +30,6 @@ try:
     from google.cloud import storage as gcs
 except ImportError:
     storage = None
-
-#
-# class HashConfig(ConfigMember):
-#     """Can be used to validate"""
-#     # TODO remove?
-#     default = {
-#         'value': None,
-#         'algorithm': 'auto'
-#     }
-#     validate = {
-#         'value': OneOf(IsNone(), str),
-#         'algorithm': OneOf('md5', 'sha256')
-#     }
-#
-#
-# class SourceConfig(ConfigMember):
-#     """Can be used to validate"""
-#     # TODO remove?
-#     default = {
-#         'url': None,
-#         'filename': None,
-#         'hash': None,
-#         'extract': 'auto',
-#         'required_sub_paths': tuple([])
-#     }
 
 
 class DatasetNotAvailable(IOError):
@@ -146,10 +122,6 @@ def load_from_cloud(source_uri, target_path):
         raise ValueError('cloud target not supported')
 
 
-# TODO
-# - work with instances instead, class can have one class attribute config
-
-
 @contextmanager
 def temp_dirtar(path):
     """Provides temporary tared version of directory"""
@@ -186,6 +158,16 @@ class HashConfig(object):
 
         raise IOError('Could not verify {}'.format(path))
 
+    def get_hash(self, path):
+        if os.path.isfile(path):
+            hash = str(hash_file(path, self.algorithm))
+
+        if os.path.isdir(path):
+            with temp_dirtar(path) as tarpath:
+                hash = str(hash_file(tarpath, self.algorithm))
+
+        return hash
+
 
 class LocalTarget(object):
 
@@ -216,6 +198,16 @@ class LocalTarget(object):
     @classmethod
     def from_config(cls, config, dataset_root):
         return cls(dataset_root=dataset_root, **config)
+
+    def print_hash(self):
+        hash_conf = self.hash or HashConfig('')
+        true_hash = hash_conf.get_hash(self.abspath)
+
+        if hash_conf.algorithm == hash_conf.default_algorithm:
+            hash_repr = true_hash
+        else:
+            hash_repr = {'algorithm': hash_conf.algorithm, 'value': true_hash}
+        pprint({'path': self.path, 'hash': hash_repr})
 
 
 def parse_target(target, dataset_root):
@@ -264,6 +256,7 @@ class URLSource(SourceABC):
          'path' new-filename.tgz,
          'hash': 'cb8953f29229...'}
         """
+        config = config.copy()
         url = config.pop('url')
         path = config.pop('path', os.path.basename(url))
 
@@ -344,7 +337,8 @@ class Pack(LocalTarget):
     def pack(self):
         with tarfile.open(self.abspath, "w:gz") as tar:
             for build_path in self.build_paths:
-                tar.add(build_path, arcname=os.path.basename(build_path))
+                build_abspath = os.path.join(self.dataset_root, build_path)
+                tar.add(build_abspath, arcname=os.path.basename(build_path))
 
     def unpack(self):
         with tarfile.open(self.abspath, "r:gz") as tar:
@@ -364,33 +358,6 @@ def parse_pack(pack, dataset_root):
     return Pack.from_config(pack, dataset_root)
 
 
-
-# class SourcePack(LocalTarget):
-#
-#     def __init__(self, source):
-#         super(SourcePack, self).__init__(None, None)
-#         self.source = source
-#
-
-# class Builder(object):
-#
-#     def __call__(self, sources, builds):
-#         raise NotImplementedError()
-#
-#
-# class Extract(Builder):
-#
-#     def __call__(self, sources, builds):
-#         for source in sources:
-#             extract_archive(source.path, path=None, archive_format=source.extract)
-#         # TODO verify that builds were generated
-#
-#
-# class TarExtractSelect(Builder):
-#
-#     def __init__(self, tarpath_to_path):
-
-
 class DatasetBase2(object):
     """
     Arguments:
@@ -407,8 +374,6 @@ class DatasetBase2(object):
         'builds': [],
         'packs': [],
     }
-    # builder = None
-    # packer = None
 
     def __init__(
         self,
@@ -529,7 +494,7 @@ class DatasetBase2(object):
             for pack in self.packs:
                 pack.pack()
 
-    def pack_ready(self, check_hash):
+    def pack_ready(self, check_hash=False):
         if self.packs is None:
             return self.sources_ready(check_hash)
 
@@ -578,6 +543,29 @@ class DatasetBase2(object):
     def get_abspath(self, relpath):
         return os.path.join(self.root_abspath, relpath)
 
+    def list_hashes(self):
+        self.list_source_hashes()
+        self.list_build_hashes()
+        self.list_pack_hashes()
+
+    def list_source_hashes(self):
+        print('---- Source targets hashes: ----')
+        for source in self.sources:
+            source.print_hash()
+
+    def list_build_hashes(self):
+        print('---- Build targets hashes: ----')
+        for build in self.builds:
+            build.print_hash()
+
+    def list_pack_hashes(self):
+        print('---- Pack targets hashes: ----')
+        if self.packs is None:
+            print('(using sources)')
+        else:
+            for pack in self.packs:
+                pack.print_hash()
+
     # OVERRIDE THESE
     def post_process(self):
         """Implement for additional logic"""
@@ -586,488 +574,103 @@ class DatasetBase2(object):
     def _load_data(self, path, **kwargs):
         raise NotImplementedError()
 
-
-class DatasetBase(object):
-    """
-
-    What problems are we solving:
-    - Reproducable and transparent
-        - transformations and compositions of available data
-        - all step declarative or implemented in python
-    - Safe
-        - all steps hashed
-    - Organized
-    - Dependencies/versions
-        - don't duplicate when not needed
-    - Seamless local and cloud dev
-        - optimized packs in cloud
-    - Extendable
-
-
-    FETCH SOURCE -> (H) -> BUILD -> (H) -> (ready)
-
-    (ready) -> (H) -> PACK -> (H) -> UPLOAD PACK -> (cloud ready)
-
-    (cloud ready) -> FETCH PACK -> (H) -> UNPACK -> (H) -> (ready)
-
-
-    REUIRE <- (H) <- (ready) <- UNPACK <- (H) <- FETCH PACK
-                        \
-                         <- BUILD <- (H) <- FETCH SOURCE
-
-
-    """
-
-    PACK_USE_SOURCES = 'use_sources'  # TODO deprecate - if none fallback on sources
-    PACK_ARCHIVE_BUILDS = 'archive_builds'
-    DEFAULT_PACK_METHODS = [PACK_USE_SOURCES, PACK_ARCHIVE_BUILDS]
-
-    root = None
-    sources = None
-    builds = None
-    pack_method = None
-    packs = None
-
-    _abs_root = None
-
-    @classmethod
-    def name(cls):
-        return cls.__name__
-
-    @classmethod
-    def abspath(cls, relpath):
-        if cls._abs_root is None:
-            abs_dataset_root = os.path.abspath(
-                os.path.join(
-                    CONFIG.home,
-                    cls.root
-                )
-            )
-        else:
-            abs_dataset_root = cls._abs_root
-
-        return os.path.join(abs_dataset_root, relpath)
-
-    @classmethod
-    def fetch_sources(cls):
-        for source in cls.sources:
-            target_name = source.get('target', os.path.basename(source['url']))
-            target_path = cls.abspath(target_name)
-            download(source['url'], target_path)
-
-    @classmethod
-    def try_fetch_sources(cls):
-        try:
-            cls.fetch_sources()
-            return True
-        except Exception as e:  # TODO narrow down
-            print('failed to fetch sources: {}'.format(e))
-            return False
-
-    @classmethod
-    def sources_fetched(cls, check_hash=False):
-        for source in cls.sources:
-            if not cls._verify_target(source, check_hash):
-                return False
-        return True
-
-    @classmethod
-    def _verify_target(cls, obj, check_hash):
-        target_relpath = obj.get(
-            'target',
-            os.path.basename(obj['url']) if 'url' in obj else None
-        )
-
-        if target_relpath is None:
-            raise ValueError('No target for obj: {}'.format(obj))
-
-        target_abspath = cls.abspath(target_relpath)
-        if not os.path.exists(target_abspath):
-            return False
-
-        if check_hash:
-            hash_config = obj.get('hash', {'value': None, 'alg': 'auto'})
-            if hash_config.get('value', None) is None:
-                warn('no hash provided for obj: {}'.format(obj))
-                return True
-
-            return validate_file(
-                fpath=target_abspath,
-                file_hash=hash_config['value'],
-                algorithm=hash_config.get('algorithm')
-            )
-
-        return True
-
-    @classmethod
-    def _print_hash(cls, obj):
-        target_relpath = obj.get(
-            'target',
-            os.path.basename(obj['url']) if 'url' in obj else None
-        )
-
-        if target_relpath is None:
-            raise ValueError('No target for obj: {}'.format(obj))
-
-        target_abspath = cls.abspath(target_relpath)
-        if not os.path.exists(target_abspath):
-            raise RuntimeError('missing object: {}'.format(obj))
-        algorithm = obj.get('hash', {'algorithm': 'sha256'}).get('algorithm', 'sha256')
-        file_hash = hash_file(target_abspath, algorithm=algorithm)
-        print('{} ({}): {}'.format(target_relpath, algorithm, file_hash))
-
-
-    @classmethod
-    def assert_sources_fetched(cls, check_hash=False):
-        if not cls.sources_fetched(check_hash):
-            raise AssertionError('sources could not be verified')
-
-    @classmethod
-    def build(cls):
-        """Default is to extract sources, run post_process"""
-        for source in cls.sources:
-            target_name = source.get('target', os.path.basename(source['url']))
-            target_path = cls.abspath(target_name)
-            extract_archive(
-                target_path,
-                path=None,
-                archive_format=source.get('extract', 'auto')
-            )
-        cls.post_process()
-
-    @classmethod
-    def post_process(cls):
-        """Implement for additional logic"""
-        return
-
-    @classmethod
-    def is_built(cls, check_hash=False):
-        for build in cls.builds:
-            if not cls._verify_target(build, check_hash):
-                return False
-        return True
-
-    @classmethod
-    def assert_built(cls, check_hash=False):
-        if not cls.is_built(check_hash):
-            raise AssertionError('build could not be verified')
-
-    @classmethod
-    def list_build_hashes(cls):
-        print('---- Build targets hashes: ----')
-        for build in cls.builds:
-            cls._print_hash(build)
-
-    @classmethod
-    def list_source_hashes(cls):
-        print('---- Source targets hashes: ----')
-        for source in cls.sources:
-            cls._print_hash(source)
-
-
-    # TODO simplify PACK methods by infering "packs" once based on method if not
-    # specified.
-
-    @classmethod
-    def pack(cls):
-        if cls.pack_method == cls.PACK_USE_SOURCES:
-            if not cls.sources_fetched():
-                cls.fetch_sources()
-            return
-
-        if cls.pack_method == cls.PACK_ARCHIVE_BUILDS:
-            # TODO make simple archive of builds (jointly or separate optional?)
-            raise NotImplementedError('')
-
-        else:
-            raise NotImplementedError(
-                '`pack_method` must be one of {}, or override the `pack` class '
-                'method'.format(cls.DEFAULT_PACK_METHODS)
-            )
-
-    @classmethod
-    def is_packed(cls, check_hash=False):
-        if cls.pack_method == cls.PACK_USE_SOURCES:
-            return cls.sources_fetched(check_hash)
-
-        if cls.packs is not None:
-            for pack in cls.packs:
-                if not cls._verify_target(pack, check_hash):
-                    return False
-            return True
-
-        if cls.pack_method == cls.PACK_ARCHIVE_BUILDS:
-            # TODO infer target names if not given, check hashes if specified
-            raise NotImplementedError('')
-
-        else:
-            raise NotImplementedError(
-                '`pack_method` must be one of {}, or if `pack` is '
-                'overloaded you must also implement the `is_packed` '
-                'method'.format(cls.DEFAULT_PACK_METHODS)
-            )
-
-    @classmethod
-    def assert_packed(cls, check_hash=False):
-        if not cls.is_packed(check_hash):
-            raise AssertionError('could not verify packed')
-
-    @classmethod
-    def cloud_uri(cls, relpath):
-        return os.path.join(
-            CONFIG.cloud.home,
-            cls.root,
-            relpath
-        )
-
-    @classmethod
-    def fetch_pack(cls, dataset_root_uri=None, check_hash=True):
-        if cls.is_packed(check_hash):
-            warn('pack already available')
-            return
-
-        if cls.pack_method == cls.PACK_USE_SOURCES:
-            for source in cls.sources:
-                target_relpath = source.get('target', os.path.basename(source['url']))
-                target_abspath = cls.abspath(target_relpath)
-                if dataset_root_uri is None:
-                    source_uri = cls.cloud_uri(target_relpath)
-                else:
-                    source_uri = os.path.join(dataset_root_uri, target_relpath)
-                load_from_cloud(source_uri, target_abspath)
-            cls.assert_sources_fetched(check_hash)
-            return
-
-        if cls.packs is not None:
-            for pack in cls.packs:
-                target_relpath = pack['target']
-                target_abspath = cls.abspath(target_relpath)
-                if dataset_root_uri is None:
-                    source_uri = cls.cloud_uri(target_relpath)
-                else:
-                    source_uri = os.path.join(dataset_root_uri, target_relpath)
-                load_from_cloud(source_uri, target_abspath)
-            return
-
-
-
-        if cls.pack_method == cls.PACK_ARCHIVE_BUILDS:
-            # TODO infer target names if not given, load from cloud.
-            raise NotImplementedError('')
-
-    @classmethod
-    def try_fetch_pack(cls):
-        try:
-            cls.fetch_pack()
-            return True
-        except CloudIOError:
-            return False
-
-    @classmethod
-    def unpack(cls):
-        if cls.pack_method == cls.PACK_USE_SOURCES:
-            cls.build()
-            return
-
-        if cls.pack_method == cls.PACK_ARCHIVE_BUILDS:
-            # TODO infer target names if not given, run default extract
-            raise NotImplementedError('')
-
-    @classmethod
-    def upload_pack(cls, dataset_root_uri=None, check_hash=True):
-        if cls.pack_method == cls.PACK_USE_SOURCES:
-            for source in cls.sources:
-                target_relapth = source.get('target', os.path.basename(source['url']))
-                target_abspath = cls.abspath(target_relapth)
-                if dataset_root_uri is None:
-                    target_uri = cls.cloud_uri(target_relapth)
-                else:
-                    target_uri = os.path.join(dataset_root_uri, target_relapth)
-                save_to_cloud(source_path=target_abspath, target_uri=target_uri)
-            return
-
-        if cls.packs is not None:
-            if not cls.is_packed(check_hash):
-                cls.pack()
-                cls.assert_packed(check_hash)
-            for pack in cls.packs:
-                target_relapth = pack['target']
-                target_abspath = cls.abspath(target_relapth)
-                if dataset_root_uri is None:
-                    target_uri = cls.cloud_uri(target_relapth)
-                else:
-                    target_uri = os.path.join(dataset_root_uri, target_relapth)
-                save_to_cloud(source_path=target_abspath, target_uri=target_uri)
-            return
-
-        if cls.pack_method == cls.PACK_ARCHIVE_BUILDS:
-            # TODO infer target names if not given, load from cloud.
-            raise NotImplementedError('')
-
-        raise NotImplementedError('')
-
-    @classmethod
-    def require(cls, check_hash=True):
-        if cls.is_built(check_hash):
-            # TODO force pack to check hash?
-            return
-
-        print('checking if packed')
-        if cls.is_packed(check_hash):
-            print('found packed, unpacking')
-            cls.unpack()
-            cls.assert_built(check_hash)
-            return
-
-        mkdirp(cls.abspath('.'))
-
-        print('checking if available from cloud')
-        if cls.try_fetch_pack():
-            print('was fetched, verifying')
-            cls.assert_packed(check_hash)
-            cls.unpack()
-            cls.assert_built(check_hash)
-            return
-
-        print('check if sources exists')
-        if cls.sources_fetched(check_hash):
-            print('sources, exists, building...')
-            cls.build()
-            cls.assert_built(check_hash)
-            return
-
-        print('trying to fetch sources')
-        if cls.try_fetch_sources():
-            cls.assert_sources_fetched(check_hash)
-            cls.build()
-            cls.assert_built(check_hash)
-            return
-
-        raise DatasetNotAvailable()
-
-    @classmethod
-    @contextmanager
-    def custom_abs_root(cls, path):
-        cls._abs_root = path
-        yield
-        cls._abs_root = None
-
-    @classmethod
-    def cmdline(cls):
-        parser = argparse.ArgumentParser()
-        subparsers = parser.add_subparsers(help='sub-command help')
-
-        # REQUIRE
-        def require(args):
-            with cls.custom_abs_root(args.target_path):
-                cls.require(check_hash=args.check_hash)
-
-        require_parser = subparsers.add_parser(
-            'require',
-            help='fetch {} dataset if not already available'.format(cls.name())
-        )
-        require_parser.add_argument(
-            '--target-path',
-            type=str,
-            default=cls.abspath('.'),
-            help='local path for storing dataset'
-        )
-        require_parser.add_argument(
-            '--check-hash',
-            type=bool,
-            default=True,
-            help='Verify hash of data'
-        )
-        require_parser.set_defaults(func=require)
-
-        # UPLOAD
-        def upload(args):
-            with cls.custom_abs_root(args.source_path):
-                if cls.is_packed(args.check_hash):
-                    print('Found packed version, uploading...')
-                    cls.upload_pack(dataset_root_uri=args.target_uri)
-                    print('Upload successful.')
-                    return
-
-                if cls.is_built():
-                    print('Found no packed, but built dataset, packing...')
-                    cls.pack()
-                    cls.assert_packed(args.check_hash)
-                    print('Done packing, uploading...')
-                    cls.upload_pack(dataset_root_uri=args.target_uri)
-                    print('Upload successful.')
-                    return
-
-                print(
-                    'Could not upload dataset, there is no built or '
-                    'packed version available at: {}, run `require` '
-                    'method first.'.format(args.source_path)
-                )
-
-        upload_parser = subparsers.add_parser(
-            'upload',
-            help='upload {} dataset to cloud storage'.format(cls.name())
-        )
-        upload_parser.add_argument(
-            '--target-uri',
-            type=str,
-            default=os.path.join(CONFIG.cloud.home, cls.root),
-            help='target URI for storing dataset'
-        )
-        upload_parser.add_argument(
-            '--source-path',
-            type=str,
-            default=os.path.join(CONFIG.home, cls.root),
-            help='local source path for to upload from storing dataset'
-        )
-        upload_parser.add_argument(
-            '--check-hash',
-            type=bool,
-            default=True,
-            help='Verify hash of packed before upload data'
-        )
-        upload_parser.set_defaults(func=upload)
-
-        # LIST HASH
-        def list_hash(args):
-            if args.phase == 'build':
-                cls.list_build_hashes()
-            elif args.phase == 'source':
-                cls.list_source_hashes()
-            else:
-                raise NotImplementedError('')
-
-        hash_parser = subparsers.add_parser(
-            'hash',
-            help='list hashes'.format(cls.name())
-        )
-        hash_parser.add_argument(
-            '--phase',
-            type=str,
-            default='build',
-            help='one of [source, build, pack]'
-        )
-        hash_parser.set_defaults(func=list_hash)
-
-        args = parser.parse_args()
-        return args.func(args)
-
-    @classmethod
-    def load_data(cls, path=None, require=True, check_hash=True, **kwargs):
-        __doc__ = cls._load_data.__doc__
-        if require:
-            if path is not None:
-                with cls.custom_abs_root(path):
-                    cls.require(check_hash)
-            else:
-                cls.require(check_hash)
-
-        if path is not None:
-            abs_root = path
-        else:
-            abs_root = cls.abspath('.')
-        return cls._load_data(path=abs_root, **kwargs)
-
-    @classmethod
-    def _load_data(cls, path, **kwargs):
-        raise NotImplementedError()
+    # TODO OLD CMDLINE STUFF
+    # @classmethod
+    # def cmdline(cls):
+    #     parser = argparse.ArgumentParser()
+    #     subparsers = parser.add_subparsers(help='sub-command help')
+    #
+    #     # REQUIRE
+    #     def require(args):
+    #         with cls.custom_abs_root(args.target_path):
+    #             cls.require(check_hash=args.check_hash)
+    #
+    #     require_parser = subparsers.add_parser(
+    #         'require',
+    #         help='fetch {} dataset if not already available'.format(cls.name())
+    #     )
+    #     require_parser.add_argument(
+    #         '--target-path',
+    #         type=str,
+    #         default=cls.abspath('.'),
+    #         help='local path for storing dataset'
+    #     )
+    #     require_parser.add_argument(
+    #         '--check-hash',
+    #         type=bool,
+    #         default=True,
+    #         help='Verify hash of data'
+    #     )
+    #     require_parser.set_defaults(func=require)
+    #
+    #     # UPLOAD
+    #     def upload(args):
+    #         with cls.custom_abs_root(args.source_path):
+    #             if cls.is_packed(args.check_hash):
+    #                 print('Found packed version, uploading...')
+    #                 cls.upload_pack(dataset_root_uri=args.target_uri)
+    #                 print('Upload successful.')
+    #                 return
+    #
+    #             if cls.is_built():
+    #                 print('Found no packed, but built dataset, packing...')
+    #                 cls.pack()
+    #                 cls.assert_packed(args.check_hash)
+    #                 print('Done packing, uploading...')
+    #                 cls.upload_pack(dataset_root_uri=args.target_uri)
+    #                 print('Upload successful.')
+    #                 return
+    #
+    #             print(
+    #                 'Could not upload dataset, there is no built or '
+    #                 'packed version available at: {}, run `require` '
+    #                 'method first.'.format(args.source_path)
+    #             )
+    #
+    #     upload_parser = subparsers.add_parser(
+    #         'upload',
+    #         help='upload {} dataset to cloud storage'.format(cls.name())
+    #     )
+    #     upload_parser.add_argument(
+    #         '--target-uri',
+    #         type=str,
+    #         default=os.path.join(CONFIG.cloud.home, cls.root),
+    #         help='target URI for storing dataset'
+    #     )
+    #     upload_parser.add_argument(
+    #         '--source-path',
+    #         type=str,
+    #         default=os.path.join(CONFIG.home, cls.root),
+    #         help='local source path for to upload from storing dataset'
+    #     )
+    #     upload_parser.add_argument(
+    #         '--check-hash',
+    #         type=bool,
+    #         default=True,
+    #         help='Verify hash of packed before upload data'
+    #     )
+    #     upload_parser.set_defaults(func=upload)
+    #
+    #     # LIST HASH
+    #     def list_hash(args):
+    #         if args.phase == 'build':
+    #             cls.list_build_hashes()
+    #         elif args.phase == 'source':
+    #             cls.list_source_hashes()
+    #         else:
+    #             raise NotImplementedError('')
+    #
+    #     hash_parser = subparsers.add_parser(
+    #         'hash',
+    #         help='list hashes'.format(cls.name())
+    #     )
+    #     hash_parser.add_argument(
+    #         '--phase',
+    #         type=str,
+    #         default='build',
+    #         help='one of [source, build, pack]'
+    #     )
+    #     hash_parser.set_defaults(func=list_hash)
+    #
+    #     args = parser.parse_args()
+    #     return args.func(args)
