@@ -1,12 +1,21 @@
 from __future__ import print_function, division
 
 import os
+import abc
 from warnings import warn
 
-from ml_tools.dataset.cloud import load_from_cloud, save_to_cloud
+from ml_tools.dataset import cloud
 from ml_tools.dataset.archive import extract_archive
 from ml_tools.dataset.config import CONFIG
 from ml_tools.dataset.target import parse_source, parse_target, parse_pack
+
+
+class DatasetError(Exception):
+    pass
+
+
+class DatasetNotAvailable(DatasetError):
+    pass
 
 
 class DatasetBase(object):
@@ -19,14 +28,8 @@ class DatasetBase(object):
     Requires self.config to exist, either as class property or build in init of
     extending class before calling super...
     """
+    __metaclass__ = abc.ABCMeta
 
-    # if packs not specified => use sources
-    # config = {
-    #     'root': 'path/to/dsroot',
-    #     'sources': [],
-    #     'builds': [],
-    #     'packs': [],
-    # }
     config = None
 
     def __init__(
@@ -72,6 +75,14 @@ class DatasetBase(object):
             ]
         else:
             self.packs = None  # assuming sources used as packs
+
+    def post_process(self):
+        """Implement for additional logic"""
+        return
+
+    @abc.abstractmethod
+    def _load(self, path, **kwargs):
+        raise NotImplementedError()
 
     def require(self, check_hash=True):
         if self.build_ready(check_hash):
@@ -139,8 +150,8 @@ class DatasetBase(object):
         for source in self.sources:
             if source.extract:  # skip if `None` or `False`
                 extract_archive(
-                    source.path,
-                    path=None,
+                    source.abspath,
+                    path=self.root_abspath,
                     archive_format=source.extract
                 )
         self.post_process()
@@ -171,15 +182,14 @@ class DatasetBase(object):
             for pack in self.packs:
                 pack.unpack()
 
-    def fetch_pack(self, check_hash=True):
-        if self.pack_ready(check_hash):
-            warn('pack already available')
-            return
-
+    def fetch_pack(self, check_hash=True, force=False):
         packs = self.packs or self.sources  # use sources if packs None
         for pack in packs:
+            if pack.ready(check_hash) and not force:
+                warn('pack already available: {}'.format(pack))
+                continue
             pack_uri = os.path.join(self.cloud_root_abspath, pack.path)
-            load_from_cloud(pack_uri, pack.abspath)
+            cloud.load_from_cloud(pack_uri, pack.abspath)
             assert pack.ready(check_hash)
 
     def upload_pack(self, check_hash=True):  # TODO override?
@@ -189,17 +199,23 @@ class DatasetBase(object):
         for pack in packs:
             pack_uri = os.path.join(self.cloud_root_abspath, pack.path)
             # TODO check if already exists?
-            save_to_cloud(pack.abspath, pack_uri)
+            cloud.save_to_cloud(pack.abspath, pack_uri)
             assert pack.ready(check_hash)
 
-    def load_data(self, require=True, check_hash=True, **kwargs):
-        __doc__ = self._load_data.__doc__
+    def load(self, require=True, check_hash=True, **kwargs):
+        __doc__ = self._load.__doc__
         if require:
             self.require(check_hash)
+        else:
+            if not self.build_ready(check_hash):
+                raise DatasetNotAvailable(
+                    'Dataset {} is not available, set `require=True` to '
+                    'automatically fetch data'.format(self.__class__.__name__)
+                )
 
-        return self._load_data(path=self.root_abspath, **kwargs)
+        return self._load(**kwargs)
 
-    def get_abspath(self, relpath):
+    def abspath_to(self, relpath):
         return os.path.join(self.root_abspath, relpath)
 
     def list_hashes(self):
@@ -224,112 +240,3 @@ class DatasetBase(object):
         else:
             for pack in self.packs:
                 pack.print_hash()
-
-    # OVERRIDE THESE
-    def post_process(self):
-        """Implement for additional logic"""
-        return
-
-    def _load_data(self, path, **kwargs):
-        raise NotImplementedError()
-
-    # TODO OLD CMDLINE STUFF
-    # @classmethod
-    # def cmdline(cls):
-    #     parser = argparse.ArgumentParser()
-    #     subparsers = parser.add_subparsers(help='sub-command help')
-    #
-    #     # REQUIRE
-    #     def require(args):
-    #         with cls.custom_abs_root(args.target_path):
-    #             cls.require(check_hash=args.check_hash)
-    #
-    #     require_parser = subparsers.add_parser(
-    #         'require',
-    #         help='fetch {} dataset if not already available'.format(cls.name())
-    #     )
-    #     require_parser.add_argument(
-    #         '--target-path',
-    #         type=str,
-    #         default=cls.abspath('.'),
-    #         help='local path for storing dataset'
-    #     )
-    #     require_parser.add_argument(
-    #         '--check-hash',
-    #         type=bool,
-    #         default=True,
-    #         help='Verify hash of data'
-    #     )
-    #     require_parser.set_defaults(func=require)
-    #
-    #     # UPLOAD
-    #     def upload(args):
-    #         with cls.custom_abs_root(args.source_path):
-    #             if cls.is_packed(args.check_hash):
-    #                 print('Found packed version, uploading...')
-    #                 cls.upload_pack(dataset_root_uri=args.target_uri)
-    #                 print('Upload successful.')
-    #                 return
-    #
-    #             if cls.is_built():
-    #                 print('Found no packed, but built dataset, packing...')
-    #                 cls.pack()
-    #                 cls.assert_packed(args.check_hash)
-    #                 print('Done packing, uploading...')
-    #                 cls.upload_pack(dataset_root_uri=args.target_uri)
-    #                 print('Upload successful.')
-    #                 return
-    #
-    #             print(
-    #                 'Could not upload dataset, there is no built or '
-    #                 'packed version available at: {}, run `require` '
-    #                 'method first.'.format(args.source_path)
-    #             )
-    #
-    #     upload_parser = subparsers.add_parser(
-    #         'upload',
-    #         help='upload {} dataset to cloud storage'.format(cls.name())
-    #     )
-    #     upload_parser.add_argument(
-    #         '--target-uri',
-    #         type=str,
-    #         default=os.path.join(CONFIG.cloud.home, cls.root),
-    #         help='target URI for storing dataset'
-    #     )
-    #     upload_parser.add_argument(
-    #         '--source-path',
-    #         type=str,
-    #         default=os.path.join(CONFIG.home, cls.root),
-    #         help='local source path for to upload from storing dataset'
-    #     )
-    #     upload_parser.add_argument(
-    #         '--check-hash',
-    #         type=bool,
-    #         default=True,
-    #         help='Verify hash of packed before upload data'
-    #     )
-    #     upload_parser.set_defaults(func=upload)
-    #
-    #     # LIST HASH
-    #     def list_hash(args):
-    #         if args.phase == 'build':
-    #             cls.list_build_hashes()
-    #         elif args.phase == 'source':
-    #             cls.list_source_hashes()
-    #         else:
-    #             raise NotImplementedError('')
-    #
-    #     hash_parser = subparsers.add_parser(
-    #         'hash',
-    #         help='list hashes'.format(cls.name())
-    #     )
-    #     hash_parser.add_argument(
-    #         '--phase',
-    #         type=str,
-    #         default='build',
-    #         help='one of [source, build, pack]'
-    #     )
-    #     hash_parser.set_defaults(func=list_hash)
-    #
-    #     args = parser.parse_args()
-    #     return args.func(args)

@@ -74,7 +74,7 @@ class WMT14Dev(DatasetBase):
         shutil.rmtree(pack_dir)
 
     @classmethod
-    def _load_data(cls, path):
+    def _load(cls, path):
         data = {}
         for language, filename in sorted(cls.language_to_filename.items()):
             with open(os.path.join(path, filename), 'r') as f:

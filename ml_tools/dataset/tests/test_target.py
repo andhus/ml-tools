@@ -88,8 +88,8 @@ class TestLocalTarget(object):
             f.write('test')
         assert local_target.ready(check_hash=False)
 
-        with assert_raises(ValueError):
-            local_target.ready(check_hash=True)
+        # just warns if no hash set
+        assert local_target.ready(check_hash=True)
 
 
 class TestURLSource():
@@ -132,10 +132,7 @@ class TestURLSource():
             path='target.txt',
             dataset_root=temp_dataset_root
         )
-        with mocked_url(
-            'ml_tools.dataset.target.url',
-            {url_source.url: 'mock-data'}
-        ):
+        with mocked_url({url_source.url: 'mock-data'}):
             url_source.fetch(check_hash=False)
 
         with open(os.path.join(temp_dataset_root, url_source.path)) as target_file:

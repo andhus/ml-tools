@@ -66,7 +66,7 @@ class FacebookLinks(DatasetBase):
         return
 
     @classmethod
-    def _load_data(cls, path, limit=None):
+    def _load(cls, path, limit=None):
         """
         # Arguments
             unique (bool):

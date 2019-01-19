@@ -13,6 +13,15 @@ from ml_tools.dataset.archive import extract_archive
 from ml_tools.dataset.hash import HashReference
 
 
+def mkdirp(path):
+    """Recursively creates directories to the specified path"""
+    if os.path.exists(path):
+        if not os.path.isdir(path):
+            raise IOError('{} exists and is not a directory'.format(path))
+    else:
+        os.makedirs(path)
+
+
 class LocalTarget(object):
 
     def __init__(self, path, dataset_root, hash_reference=None):
@@ -36,12 +45,14 @@ class LocalTarget(object):
         if not self.exists():
             return False
 
-        if check_hash:
-            if self.hash is None:
-                raise ValueError('no hash provided for {}'.format(self.path))
-            return self.hash.is_valid(self.abspath)
+        if not check_hash:
+            return True
 
-        return True
+        if self.hash is None:
+            warn('no hash provided for {}'.format(self.path))
+            return True
+
+        return self.hash.is_valid(self.abspath)
 
     @classmethod
     def from_config(cls, config, dataset_root):
@@ -110,6 +121,7 @@ class URLSource(SourceABC):
         return cls(url=url, path=path, dataset_root=dataset_root, **config)
 
     def fetch(self, check_hash=True):
+        mkdirp(os.path.dirname(self.abspath))  # TODO cleanup if fail?
         url.download(self.url, self.abspath)
         assert self.ready(check_hash)
 

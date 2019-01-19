@@ -33,14 +33,14 @@ class NewsCommentaryV9FrEn(DatasetBase):
 
     def build(self):
         [source] = self.sources
-        tmp_dir = self.get_abspath('tmp')
+        tmp_dir = self.abspath_to('tmp')
         mkdirp(tmp_dir)
         extract_archive(source.abspath, path=tmp_dir, archive_format=source.extract)
         for build in self.builds:
             shutil.move(os.path.join(tmp_dir, 'training', build.path), build.abspath)
         shutil.rmtree(tmp_dir)
 
-    def _load_data(self, path):
+    def _load(self, path):
         data = {}
         for language, filename in sorted(self.language_to_filename.items()):
             with open(os.path.join(path, filename), 'r') as f:
