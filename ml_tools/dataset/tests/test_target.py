@@ -3,13 +3,13 @@ from __future__ import print_function, division
 import os
 
 from ml_tools.dataset.hash import HashReference
-from ml_tools.dataset.test_utils import mocked_url, TempDirMixin, in_temp_dir
+from ml_tools.dataset.test_utils import mocked_url, in_temp_dir
 
 from nose.tools import assert_equal, assert_raises
 
 
 class TestLocalTarget(object):
-    from ..target import LocalTarget as TestClass
+    from ml_tools.dataset.target import LocalTarget as TestClass
 
     def test_init(self):
         default_kwargs = dict(
@@ -143,6 +143,128 @@ class TestURLSource():
         assert_equal(target_data, 'mock-data')
 
 
-# class TestPack(TempDirMixin):
-#
-#     def test_ini
+class TestPack(object):
+    from ml_tools.dataset.target import Pack as TestClass
+
+    def test_init(self):
+        pack = self.TestClass(
+            path='test.pack.tgz',
+            dataset_root='/dataset_root',
+            build_paths=['thing.txt']
+        )
+
+    def test_from_config(self):
+        # full spec
+        pack = self.TestClass.from_config(
+            config={
+                'path': 'test.pack.tgz',
+                'build_paths': ['test.txt']
+            },
+            dataset_root='/dataset_root'
+        )
+        assert_equal(pack.path, 'test.pack.tgz')
+        assert_equal(pack.build_paths, ['test.txt'])
+
+        # path inferred
+        pack = self.TestClass.from_config(
+            config={'build_paths': ['test.txt']},
+            dataset_root='/dataset_root'
+        )
+        assert_equal(pack.path, 'test.txt.pack.tgz')
+        assert_equal(pack.build_paths, ['test.txt'])
+
+        # single build path(s)
+        pack = self.TestClass.from_config(
+            config={'build_paths': 'test.txt'},
+            dataset_root='/dataset_root'
+        )
+        assert_equal(pack.path, 'test.txt.pack.tgz')
+        assert_equal(pack.build_paths, ['test.txt'])
+
+    @in_temp_dir
+    def test_pack_unpack(self, dataset_root):
+        pack = self.TestClass(
+            path='test.pack.tgz',
+            dataset_root=dataset_root,
+            build_paths=['test.txt']
+        )
+        build_abspath = os.path.join(dataset_root, 'test.txt')
+        pack_abspath = os.path.join(dataset_root, pack.path)
+
+        with open(build_abspath, 'w') as f:
+            f.write('test')
+
+        pack.pack()
+        assert os.path.exists(pack_abspath)
+        os.remove(build_abspath)
+        assert not os.path.exists(build_abspath)
+        pack.unpack()
+        assert os.path.exists(build_abspath)
+        with open(build_abspath) as f:
+            assert_equal(f.read(), 'test')
+
+    @in_temp_dir
+    def test_pack_unpack_nested(self, dataset_root):
+        pack = self.TestClass(
+            path='test.pack.tgz',
+            dataset_root=dataset_root,
+            build_paths=[
+                'dir1/test1.txt',
+                'dir1/dir2/test2.txt'
+            ]
+        )
+        build_abspaths = [
+            os.path.join(dataset_root, build_path)
+            for build_path in pack.build_paths
+        ]
+        pack_abspath = os.path.join(dataset_root, pack.path)
+
+        os.makedirs(os.path.join(dataset_root, 'dir1', 'dir2'))
+        with open(build_abspaths[0], 'w') as f:
+            f.write('test1')
+        with open(build_abspaths[1], 'w') as f:
+            f.write('test2')
+
+        pack.pack()
+        assert os.path.exists(pack_abspath)
+        for build_abspath in build_abspaths:
+            os.remove(build_abspath)
+            assert not os.path.exists(build_abspath)
+        pack.unpack()
+        for build_abspath in build_abspaths:
+            assert os.path.exists(build_abspath)
+        with open(build_abspaths[0]) as f:
+            assert_equal(f.read(), 'test1')
+        with open(build_abspaths[1]) as f:
+            assert_equal(f.read(), 'test2')
+
+    @in_temp_dir
+    def test_pack_unpack_nested_merged(self, dataset_root):
+        pack = self.TestClass(
+            path='test.pack.tgz',
+            dataset_root=dataset_root,
+            build_paths=['dir1/test.txt']
+        )
+        build_abspath = os.path.join(dataset_root, 'dir1', 'test.txt')
+        other_file = os.path.join(dataset_root, 'dir1', 'other.txt')
+
+        pack_abspath = os.path.join(dataset_root, pack.path)
+
+        os.mkdir(os.path.join(dataset_root, 'dir1'))
+        with open(build_abspath, 'w') as f:
+            f.write('test')
+        with open(other_file, 'w') as f:
+            f.write('other text')
+
+        pack.pack()
+        assert os.path.exists(pack_abspath)
+        os.remove(build_abspath)
+        assert not os.path.exists(build_abspath)
+        pack.unpack()
+        assert os.path.exists(build_abspath)
+        with open(build_abspath) as f:
+            assert_equal(f.read(), 'test')
+
+        assert os.path.exists(other_file)
+        with open(other_file) as f:
+            assert_equal(f.read(), 'other text')

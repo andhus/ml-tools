@@ -6,7 +6,10 @@ import tarfile
 from warnings import warn
 from pprint import pprint
 
+import six
+
 from ml_tools.dataset import url
+from ml_tools.dataset.archive import extract_archive
 from ml_tools.dataset.hash import HashReference
 
 
@@ -145,7 +148,7 @@ def parse_source(source, dataset_root):
 
 class Pack(LocalTarget):
     """TODO"""
-    default_tar_extension = 'pack.tgz'
+    default_tar_extension = '.pack.tgz'
 
     def __init__(self, build_paths=None, **kwargs):
         super(Pack, self).__init__(**kwargs)
@@ -164,6 +167,8 @@ class Pack(LocalTarget):
         """
         config = config.copy()
         build_paths = config.pop('build_paths')
+        if isinstance(build_paths, six.string_types):
+            build_paths = [build_paths]
         path = config.pop('path', None)
         if path is None:
             assert len(build_paths) == 1
@@ -180,11 +185,10 @@ class Pack(LocalTarget):
         with tarfile.open(self.abspath, "w:gz") as tar:
             for build_path in self.build_paths:
                 build_abspath = os.path.join(self.dataset_root, build_path)
-                tar.add(build_abspath, arcname=os.path.basename(build_path))
+                tar.add(build_abspath, arcname=build_path)
 
     def unpack(self):
-        with tarfile.open(self.abspath, "r:gz") as tar:
-            tar.extractall()
+        extract_archive(self.abspath, path=self.dataset_root)
 
 
 def parse_pack(pack, dataset_root):
